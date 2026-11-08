@@ -53,6 +53,23 @@ describe('Creating dashboard users (SEC-012)', () => {
     ).rejects.toThrow(/another tenant/);
   });
 
+  it('a plain username (not an email) can sign in, and a short password only with the explicit opt-in', async () => {
+    const username = 'Test-Admin-User';
+    await prisma.user.deleteMany({ where: { email: { equals: username, mode: 'insensitive' } } });
+
+    // Strict by default: 4 characters is refused.
+    await expect(AuthService.createUser({ tenantId: tenantA, email: username, role: 'ADMIN', password: '1234' })).rejects.toThrow(/at least 12/);
+    // Opt-in: allowed from 4 characters, still not below.
+    await expect(AuthService.createUser({ tenantId: tenantA, email: username, role: 'ADMIN', password: '123', allowWeakPassword: true })).rejects.toThrow(/at least 4/);
+    const created = await AuthService.createUser({ tenantId: tenantA, email: username, role: 'ADMIN', password: '1234', allowWeakPassword: true });
+    expect(created.action).toBe('created');
+
+    const login = await AuthService.login('test-admin-user', '1234'); // case-insensitive
+    expect(login.user.email).toBe('test-admin-user');
+    expect(login.user.tenantId).toBe(tenantA);
+    await expect(AuthService.login(username, '12345')).rejects.toBeInstanceOf(AuthError);
+  });
+
   it('refuses a short password, a too-long password and an unknown tenant', async () => {
     await expect(AuthService.createUser({ tenantId: tenantA, email: 'short@example.test', role: 'ADMIN', password: 'short' })).rejects.toBeInstanceOf(AuthError);
     await expect(AuthService.createUser({ tenantId: tenantA, email: 'long@example.test', role: 'ADMIN', password: 'a'.repeat(73) })).rejects.toBeInstanceOf(AuthError);

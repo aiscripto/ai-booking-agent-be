@@ -4,7 +4,8 @@
  *   read -rs PW; printf %s "$PW" | node dist/scripts/create-user.js \
  *     --tenant <tenant-uuid> --email someone@clinic.com --name "Full Name" --role ADMIN --yes
  *
- * Add --reset to change the password of an existing user. The password is read from stdin so it
+ * Add --reset to change the password of an existing user. Add --allow-weak-password to accept a
+ * password shorter than 12 characters (at least 4); only for a test system. The password is read from stdin so it
  * never appears in shell history or in the process list. This writes to whatever database
  * DATABASE_URL points at, so it prints the target and needs --yes. Not imported by runtime code.
  */
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
       name: { type: 'string' },
       role: { type: 'string', default: 'ADMIN' },
       reset: { type: 'boolean', default: false },
+      'allow-weak-password': { type: 'boolean', default: false },
       yes: { type: 'boolean', default: false },
     },
   });
@@ -45,6 +47,9 @@ async function main(): Promise<void> {
   const target = new URL(config.DATABASE_URL);
   console.log(`Database: ${target.hostname}:${target.port || '5432'}${target.pathname}`);
   console.log(`${values.reset ? 'Reset password for' : 'Create'}: ${values.email} (${role}) in tenant ${values.tenant}`);
+  if (values['allow-weak-password']) {
+    console.log('WARNING: a short password is allowed for this account. Anyone who guesses it can sign in.');
+  }
   if (!values.yes) {
     console.log('Not done. Add --yes to continue.');
     return;
@@ -58,6 +63,7 @@ async function main(): Promise<void> {
     role,
     password,
     resetIfExists: values.reset,
+    allowWeakPassword: values['allow-weak-password'],
   });
   console.log(`Done: ${result.action} for ${result.user.email} (id ${result.user.id}).`);
 }

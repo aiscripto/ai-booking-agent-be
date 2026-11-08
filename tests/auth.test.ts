@@ -96,9 +96,9 @@ describe('Authentication and tenant isolation (SEC-012)', () => {
       await removeStaff(user);
     });
 
-    it('returns 400 for a missing body, a bad email, and a password over 72 bytes', async () => {
+    it('returns 400 for a missing body, an empty username, and a password over 72 bytes', async () => {
       const ipAddr = freshIp();
-      for (const body of [{}, { email: 'not-an-email', password: 'x' }, { email: adminA.email, password: 'a'.repeat(73) }]) {
+      for (const body of [{}, { email: '   ', password: 'x' }, { email: adminA.email, password: 'a'.repeat(73) }]) {
         const res = await request(app).post('/api/v1/auth/login').set('X-Forwarded-For', ipAddr).send(body);
         expect(res.status).toBe(400);
       }

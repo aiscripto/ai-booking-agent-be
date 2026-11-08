@@ -220,9 +220,15 @@ export class AuthService {
     role: StaffRole;
     password: string;
     resetIfExists?: boolean;
+    /**
+     * Allow a short, easy-to-guess password (at least 4 characters). Off by default. Only for a test
+     * system where the owner has decided to accept that anyone who guesses it gets in.
+     */
+    allowWeakPassword?: boolean;
   }): Promise<{ action: 'created' | 'password-reset'; user: PublicUser }> {
-    if (input.password.length < 12) {
-      throw new AuthError('The password must be at least 12 characters.');
+    const minimum = input.allowWeakPassword ? 4 : 12;
+    if (input.password.length < minimum) {
+      throw new AuthError(`The password must be at least ${minimum} characters.`);
     }
     if (Buffer.byteLength(input.password, 'utf8') > 72) {
       throw new AuthError('The password must be at most 72 bytes.');
