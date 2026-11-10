@@ -7,9 +7,11 @@ import { errorMiddleware } from './middlewares/error.middleware';
 
 const app = express();
 
-// The frontend nginx sits in front of this app. Trust one proxy hop so req.ip is the real
-// client address (needed for the login rate limits), not nginx's address.
-app.set('trust proxy', 1);
+// The frontend nginx sits in front of this app, on a private Docker address. Trust the
+// X-Forwarded-For header ONLY when the connection comes from a private or loopback address.
+// A client that reaches this port directly from the internet has a public address, so its
+// forged header is ignored and the login rate limits cannot be avoided (audit SEC-013).
+app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
 // Standard middleware stack
 app.use(helmet());
