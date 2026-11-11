@@ -1,7 +1,12 @@
+import { bookableSlot } from './helpers/time';
+import { toolResult } from './helpers/voice';
 import request from 'supertest';
 import app from '../src/app';
 import { prisma } from '../src/services/db.service';
 import { GoogleCalendarService } from '../src/services/google-calendar.service';
+
+// Two tests book this same time on purpose (the second must be refused as a double booking).
+const sharedBookingTime = bookableSlot();
 
 // Mock the Google Calendar Service
 jest.mock('../src/services/google-calendar.service', () => {
@@ -75,8 +80,7 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
       // Mock Google Calendar to say slot is available
       (GoogleCalendarService.checkAvailability as jest.Mock).mockResolvedValue(true);
 
-      const targetTime = new Date();
-      targetTime.setHours(targetTime.getHours() + 24); // tomorrow
+      const targetTime = bookableSlot();
 
       const response = await request(app)
         .post(`/api/v1/voice/webhook?tenant_id=${tenantId}&calendar_id=${calendarId}`)
@@ -102,7 +106,7 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
       expect(response.status).toBe(200);
       expect(response.body.results).toBeDefined();
       expect(response.body.results[0].toolCallId).toBe('call-check-01');
-      expect(response.body.results[0].result.available).toBe(true);
+      expect(toolResult(response).available).toBe(true);
       expect(GoogleCalendarService.checkAvailability).toHaveBeenCalled();
     });
 
@@ -114,9 +118,7 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
         new Error('Google Service Unavailable')
       );
 
-      const bookingTime = new Date();
-      bookingTime.setHours(bookingTime.getHours() + 48); // day after tomorrow
-      bookingTime.setMinutes(0, 0, 0); // normalize
+      const bookingTime = bookableSlot();
 
       const response = await request(app)
         .post(`/api/v1/voice/webhook?tenant_id=${tenantId}&calendar_id=${calendarId}`)
@@ -143,8 +145,8 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body.results[0].result.success).toBe(true);
-      expect(response.body.results[0].result.appointmentId).toBeDefined();
+      expect(toolResult(response).success).toBe(true);
+      expect(toolResult(response).appointmentId).toBeDefined();
 
       // Wait for background task to catch and finish
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -168,9 +170,7 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
       // Mock calendar event creation returns mock ID
       (GoogleCalendarService.createEvent as jest.Mock).mockResolvedValue('gcal-event-uuid-123');
 
-      const bookingTime = new Date();
-      bookingTime.setHours(bookingTime.getHours() + 72); // 3 days later
-      bookingTime.setMinutes(0, 0, 0); // normalize
+      const bookingTime = sharedBookingTime; // the next test books this same time again
 
       const response = await request(app)
         .post(`/api/v1/voice/webhook?tenant_id=${tenantId}&calendar_id=${calendarId}`)
@@ -197,8 +197,8 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body.results[0].result.success).toBe(true);
-      expect(response.body.results[0].result.appointmentId).toBeDefined();
+      expect(toolResult(response).success).toBe(true);
+      expect(toolResult(response).appointmentId).toBeDefined();
 
       // Wait for background sync to complete (max 1 second)
       let appointment = null;
@@ -227,9 +227,7 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
       // Mock calendar is available (simulate race condition where calendar isn't updated yet but local DB is)
       (GoogleCalendarService.checkAvailability as jest.Mock).mockResolvedValue(true);
 
-      const bookingTime = new Date();
-      bookingTime.setHours(bookingTime.getHours() + 72); // 3 days later
-      bookingTime.setMinutes(0, 0, 0); // normalize
+      const bookingTime = sharedBookingTime;
 
       const response = await request(app)
         .post(`/api/v1/voice/webhook?tenant_id=${tenantId}&calendar_id=${calendarId}`)
@@ -256,8 +254,8 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
 
       expect(response.status).toBe(200);
       // It should fail because the unique constraint throws an error and rejects double booking.
-      expect(response.body.results[0].result.success).toBe(false);
-      expect(response.body.results[0].result.message).toContain('already booked');
+      expect(toolResult(response).success).toBe(false);
+      expect(toolResult(response).message).toContain('already booked');
     });
 
     it('should successfully handle a flat Custom Tool Call format for checkAvailability and bookAppointment', async () => {
@@ -265,9 +263,7 @@ describe('Voice Webhook Endpoints Integration Tests', () => {
       (GoogleCalendarService.checkAvailability as jest.Mock).mockResolvedValue(true);
       (GoogleCalendarService.createEvent as jest.Mock).mockResolvedValue('gcal-flat-event-uuid');
 
-      const checkTime = new Date();
-      checkTime.setHours(checkTime.getHours() + 96); // 4 days later
-      checkTime.setMinutes(0, 0, 0); // normalize
+      const checkTime = bookableSlot();
 
       // 1. Test flat checkAvailability
       const checkResponse = await request(app)

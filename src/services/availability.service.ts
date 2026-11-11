@@ -1,7 +1,8 @@
-import { config } from '../config';
 import { prisma } from './db.service';
 import { GoogleCalendarService } from './google-calendar.service';
 import { SLOT_MINUTES } from './appointment.service';
+import { defaultWeekly, LegacyHours, legacyToWeekly, WeeklyHours } from './business-hours';
+import { TenantScheduleService } from './tenant-schedule.service';
 
 /**
  * One source of truth for "which times can be booked" (decision D3): the local appointments table
@@ -73,28 +74,30 @@ export function todayIn(timeZone: string, now: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 }
 
-/** Every slot start inside business hours for one date (empty on a day the business is closed). */
+/**
+ * Every slot start inside opening hours for one date (empty on a day the business is closed).
+ * `hours` is the weekly hours (seven lists, Sunday first); the old single-range form is still accepted.
+ * With no `hours`, the server settings apply.
+ */
 export function buildDaySlots(
   date: string,
   timeZone: string,
-  hours: { start: string; end: string; days: number[] } = {
-    start: config.BUSINESS_HOURS_START,
-    end: config.BUSINESS_HOURS_END,
-    days: config.BUSINESS_DAYS.split(',').map(Number),
-  },
+  hours: WeeklyHours | LegacyHours = defaultWeekly(),
   slotMinutes: number = SLOT_MINUTES
 ): Date[] {
+  const week = Array.isArray(hours) ? hours : legacyToWeekly(hours);
   const [y, m, d] = date.split('-').map(Number);
   const weekday = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  if (!hours.days.includes(weekday)) return [];
 
-  const open = zonedTimeToUtc(date, hours.start, timeZone).getTime();
-  const close = zonedTimeToUtc(date, hours.end, timeZone).getTime();
-  const slots: Date[] = [];
-  for (let t = open; t + slotMinutes * 60000 <= close; t += slotMinutes * 60000) {
-    slots.push(new Date(t));
+  const slots = new Map<number, Date>(); // keyed by time, so overlapping ranges cannot repeat a slot
+  for (const range of week[weekday] ?? []) {
+    const open = zonedTimeToUtc(date, range.start, timeZone).getTime();
+    const close = zonedTimeToUtc(date, range.end, timeZone).getTime();
+    for (let t = open; t + slotMinutes * 60000 <= close; t += slotMinutes * 60000) {
+      slots.set(t, new Date(t));
+    }
   }
-  return slots;
+  return [...slots.values()].sort((a, b) => a.getTime() - b.getTime());
 }
 
 /** Slots that do not overlap any busy interval. */
@@ -124,7 +127,8 @@ export class AvailabilityService {
     timeZone: string,
     now: Date = new Date()
   ): Promise<FreeSlots> {
-    const candidates = buildDaySlots(date, timeZone);
+    const schedule = await TenantScheduleService.get(tenantId);
+    const candidates = buildDaySlots(date, timeZone, schedule.weekly);
     if (candidates.length === 0) return { closed: true, slots: [] };
 
     const upcoming = candidates.filter((s) => s.getTime() >= now.getTime());

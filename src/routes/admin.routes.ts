@@ -23,6 +23,15 @@ router.post('/departments', org, C.createDepartment);
 router.put('/departments/:id', org, C.updateDepartment);
 router.delete('/departments/:id', org, C.deleteDepartment);
 
+router.get('/categories', org, C.listCategories);
+router.post('/categories', org, C.createCategory);
+router.put('/categories/:id', org, C.updateCategory);
+router.delete('/categories/:id', org, C.deleteCategory);
+
+router.get('/employees/:id/time-off', org, C.listTimeOff);
+router.post('/employees/:id/time-off', org, C.addTimeOff);
+router.delete('/time-off/:id', org, C.removeTimeOff);
+
 // The employee list is also needed to link a user account, and the role list to set an employee's role.
 router.get('/employees', requireAnyPermission('organization.manage', 'users.manage'), C.listEmployees);
 router.post('/employees', org, C.createEmployee);

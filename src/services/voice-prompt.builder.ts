@@ -1,4 +1,5 @@
 import { prisma } from './db.service';
+import { ConsultantService } from './consultants/consultant.service';
 
 export interface DynamicPromptConfig {
   tenantName: string;
@@ -6,6 +7,8 @@ export interface DynamicPromptConfig {
   resources: Array<{ name: string; title?: string | null }>;
   serviceTypes: Array<{ name: string; durationMinutes: number; price?: number | null }>;
   intakeFields?: string[];
+  /** True when the business has consultants: bookings are with a named person or "anyone". */
+  consultantMode?: boolean;
 }
 
 export class VoicePromptBuilder {
@@ -26,7 +29,7 @@ export class VoicePromptBuilder {
    * Build dynamic system prompt string from tenant configuration
    */
   public static buildSystemPrompt(config: DynamicPromptConfig): string {
-    const { tenantName, industry, resources, serviceTypes, intakeFields = [] } = config;
+    const { tenantName, industry, resources, serviceTypes, intakeFields = [], consultantMode = false } = config;
 
     const baseInstruction = this.INDUSTRY_INSTRUCTIONS[industry] || this.INDUSTRY_INSTRUCTIONS.GENERAL;
 
@@ -62,6 +65,12 @@ Instructions & Conversation Flow:
 5. Collect required caller information.
 6. Call the 'bookAppointment' function to lock in their booking.
 7. Confirm the booked appointment time before ending the call gracefully.
+${consultantMode ? `
+Consultants:
+- This business books appointments with a named consultant. Ask which service the caller needs and whether they want a particular person or anyone.
+- Pass 'category' (the service) and 'consultant' (the person's name) to 'checkAvailability' and 'bookAppointment'. Leave 'consultant' out when the caller says anyone.
+- Call 'listConsultants' to learn the real names and services. Never invent a name or a service.
+- Tell the caller who the appointment is with after booking.` : ''}
 `.trim();
   }
 
@@ -76,6 +85,10 @@ Instructions & Conversation Flow:
         serviceTypes: true,
       },
     });
+    // With consultants, the team list is the consultants and the services are the service categories.
+    const consultantMode = tenant ? await ConsultantService.isActive(tenantId) : false;
+    const consultants = consultantMode ? await ConsultantService.list(tenantId) : [];
+    const categories = consultantMode ? await ConsultantService.categories(tenantId) : [];
 
     if (!tenant) {
       return this.buildSystemPrompt({
@@ -98,13 +111,18 @@ Instructions & Conversation Flow:
     return this.buildSystemPrompt({
       tenantName: tenant.name,
       industry: tenant.industry,
-      resources: tenant.resources.map((r) => ({ name: r.name, title: r.title })),
-      serviceTypes: tenant.serviceTypes.map((s) => ({
-        name: s.name,
-        durationMinutes: s.durationMinutes,
-        price: s.price ? Number(s.price) : null,
-      })),
+      resources: consultantMode
+        ? consultants.map((c) => ({ name: c.fullName, title: c.title }))
+        : tenant.resources.map((r) => ({ name: r.name, title: r.title })),
+      serviceTypes: consultantMode
+        ? categories.map((c) => ({ name: c.name, durationMinutes: 30 }))
+        : tenant.serviceTypes.map((s) => ({
+            name: s.name,
+            durationMinutes: s.durationMinutes,
+            price: s.price ? Number(s.price) : null,
+          })),
       intakeFields: Array.from(intakeFieldsSet),
+      consultantMode,
     });
   }
 }

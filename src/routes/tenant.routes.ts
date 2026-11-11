@@ -9,6 +9,7 @@ router.use(requireAuth);
 
 // Reading: anyone allowed on the dashboard
 router.get('/vocabulary', requirePermission('dashboard.view'), TenantController.getVocabulary);
+router.get('/consultants', requirePermission('dashboard.view'), TenantController.getConsultants);
 router.get('/branding', requirePermission('dashboard.view'), TenantController.getBranding);
 
 // Changing the tenant: only roles that are allowed to

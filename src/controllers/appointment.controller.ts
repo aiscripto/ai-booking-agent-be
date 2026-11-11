@@ -1,3 +1,7 @@
+import { BookingTimeError, parseBookingTime } from '../services/booking-time';
+import { BookingService } from '../services/booking.service';
+import { ConsultantError } from '../services/consultants/consultant.service';
+import { TenantScheduleService } from '../services/tenant-schedule.service';
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../services/db.service';
 import { AppointmentService } from '../services/appointment.service';
@@ -39,15 +43,16 @@ export class AppointmentController {
       };
 
       if (dateStr && isRealDate(dateStr)) {
-        // The date is the business's calendar day (DEFAULT_TIME_ZONE), not the UTC day: an evening
+        // The date is the business's calendar day (its own time zone), not the UTC day: an evening
         // appointment belongs to the day it is on for the people who book it.
-        const { start, end } = dayBoundsUtc(dateStr, config.DEFAULT_TIME_ZONE);
+        const { start, end } = dayBoundsUtc(dateStr, (await TenantScheduleService.get(tenantId)).timeZone);
         whereCondition.appointmentDateTime = { gte: start, lt: end };
       }
 
       const appointments = await prisma.appointment.findMany({
         where: whereCondition,
         orderBy: { appointmentDateTime: 'asc' },
+        include: { employee: { select: { id: true, fullName: true } }, category: { select: { id: true, name: true } } },
       });
 
       res.status(200).json({
@@ -84,23 +89,33 @@ export class AppointmentController {
         return;
       }
 
-      const parsedDate = new Date(dateTimeRaw);
-
-      if (isNaN(parsedDate.getTime())) {
-        res.status(400).json({
-          status: 'error',
-          message: 'Invalid dateTime format.',
-        });
-        return;
+      // One rule for the dashboard and the voice agent: a real time, inside opening hours, on the grid.
+      // BookingService then books one calendar, or a consultant when the business has consultants.
+      let appointment;
+      try {
+        const schedule = await TenantScheduleService.get(tenantId);
+        const when = parseBookingTime(dateTimeRaw, schedule.timeZone);
+        const booked = await BookingService.book(
+          tenantId,
+          {
+            when,
+            calendarId: 'primary', // Default main calendar for client bookings
+            customerName,
+            customerPhone,
+            customerEmail: customerEmail || null,
+            consultant: typeof req.body.employeeId === 'string' ? req.body.employeeId : null,
+            category: typeof req.body.categoryId === 'string' ? req.body.categoryId : null,
+          },
+          schedule
+        );
+        appointment = { ...booked.appointment, consultant: booked.consultant };
+      } catch (error) {
+        if (error instanceof BookingTimeError || error instanceof ConsultantError) {
+          res.status(400).json({ status: 'error', message: error.message });
+          return;
+        }
+        throw error;
       }
-
-      const appointment = await AppointmentService.createAppointment(tenantId, {
-        calendarId: 'primary', // Default main calendar for client bookings
-        appointmentDateTime: parsedDate,
-        customerName,
-        customerPhone,
-        customerEmail: customerEmail || null,
-      });
 
       res.status(201).json({
         status: 'success',

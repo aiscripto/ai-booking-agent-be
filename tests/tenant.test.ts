@@ -28,7 +28,8 @@ describe('Tenant & Industry Preset Endpoints Integration Tests', () => {
       expect(response.body.data.vocabulary.customerLabel).toBe('Patient');
       // Times are stored in UTC; the screens need the zone to show them correctly.
       expect(response.body.data.timeZone).toBe('America/New_York');
-      expect(response.body.data.businessHours).toEqual({ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] });
+      expect(response.body.data.businessHours).toMatchObject({ start: '09:00', end: '17:00', days: [1, 2, 3, 4, 5] });
+      expect(response.body.data.businessHours.weekly).toHaveLength(7);
     });
 
     it('should return 401 without a login token, even when a tenant_id is supplied', async () => {

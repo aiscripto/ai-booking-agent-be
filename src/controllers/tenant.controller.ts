@@ -4,17 +4,19 @@ import { getVocabulary } from '../config/industry-vocabulary';
 import { z } from 'zod';
 import { IndustryType } from '@prisma/client';
 import { slotCacheService } from '../services/slot-cache.service';
-import { config } from '../config';
+import { TenantScheduleService } from '../services/tenant-schedule.service';
+import { summarize } from '../services/business-hours';
+import { ConsultantService } from '../services/consultants/consultant.service';
 
 
 export class TenantController {
-  /** When appointments can be offered (server settings). Days: 0 = Sunday ... 6 = Saturday. */
-  private static businessHours() {
-    return {
-      start: config.BUSINESS_HOURS_START,
-      end: config.BUSINESS_HOURS_END,
-      days: config.BUSINESS_DAYS.split(',').map(Number),
-    };
+  /**
+   * When appointments can be offered. `weekly` is the full answer (seven lists, Sunday first); `start`, `end`
+   * and `days` are the short form (earliest opening, latest closing, open days) for the calendar grid.
+   */
+  private static async schedule(tenantId: string) {
+    const { timeZone, weekly } = await TenantScheduleService.get(tenantId);
+    return { timeZone, businessHours: { ...summarize(weekly), weekly } };
   }
 
   /**
@@ -40,6 +42,7 @@ export class TenantController {
 
       const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
       const vocabulary = getVocabulary(tenant?.industry || 'GENERAL');
+      const when = await TenantController.schedule(tenantId);
 
       res.status(200).json({
         status: 'success',
@@ -49,8 +52,29 @@ export class TenantController {
           industry: tenant?.industry ?? null,
           vocabulary,
           // The time zone every time should be shown in (times are stored in UTC).
-          timeZone: config.DEFAULT_TIME_ZONE,
-          businessHours: TenantController.businessHours(),
+          timeZone: when.timeZone,
+          businessHours: when.businessHours,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/tenant/consultants: who can be booked and for what (active only). Empty lists mean the
+   * business books one calendar, so the booking screens show no consultant choice.
+   */
+  public static async getConsultants(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const tenantId = TenantController.authTenant(req, res);
+      if (!tenantId) return;
+      const [consultants, categories] = await Promise.all([ConsultantService.list(tenantId), ConsultantService.categories(tenantId)]);
+      res.status(200).json({
+        status: 'success',
+        data: {
+          categories,
+          consultants: consultants.map((c) => ({ id: c.id, fullName: c.fullName, title: c.title, categoryIds: c.categories.map((x) => x.id) })),
         },
       });
     } catch (error) {
@@ -83,6 +107,7 @@ export class TenantController {
         res.status(404).json({ status: 'error', message: 'Tenant not found.' });
         return;
       }
+      const when = await TenantController.schedule(tenantId);
 
       res.status(200).json({
         status: 'success',
@@ -94,8 +119,8 @@ export class TenantController {
           resources: tenant.resources,
           serviceTypes: tenant.serviceTypes,
           departments: tenant.departments,
-          timeZone: config.DEFAULT_TIME_ZONE,
-          businessHours: TenantController.businessHours(),
+          timeZone: when.timeZone,
+          businessHours: when.businessHours,
         },
       });
 

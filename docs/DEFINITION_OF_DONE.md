@@ -51,6 +51,8 @@ Run `npm run verify` (or `npm run verify:quick` while iterating). It must exit *
 - [ ] Every new external call has `try/catch` and a defined fallback.
 - [ ] Every background promise has a `.catch()`. An unhandled rejection kills the process.
 - [ ] No failed integration can roll back a confirmed booking.
+- [ ] **R9:** no fabricated data. A failure or missing setting is reported as such (error or empty result), never
+      replaced by made-up values, and nothing reports success for work that was not done.
 - [ ] No response interpolates untrusted input into HTML, and none carries a stack
       trace, an internal exception message, or a secret.
 

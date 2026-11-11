@@ -1,7 +1,11 @@
+import { BookingTimeError, assertBookableSlot, parseBookingTime } from './booking-time';
+import { TenantScheduleService } from './tenant-schedule.service';
+import { BookingService } from './booking.service';
+import { ConsultantError, ConsultantService, consultantKey } from './consultants/consultant.service';
 import { AppointmentService } from './appointment.service';
 import { prisma } from './db.service';
 import { TRANSACTION_OPTIONS } from '../config/timeouts';
-import { AvailabilityService, AvailabilityUnavailableError, todayIn } from './availability.service';
+import { AvailabilityService, AvailabilityUnavailableError, isRealDate, todayIn } from './availability.service';
 import { config } from '../config';
 import { slotCacheService, SlotCacheService } from './slot-cache.service';
 
@@ -10,6 +14,23 @@ export interface ToolCallInput {
   name: string;
   arguments: any;
   toolCallId: string;
+}
+
+/** The tools the voice agent can call. Used to check a tool name sent in the web address (see processWebhook). */
+export const VOICE_TOOLS = ['checkAvailability', 'getAvailableTimes', 'bookAppointment', 'listConsultants'] as const;
+export type VoiceToolName = (typeof VOICE_TOOLS)[number];
+
+/** Tool arguments arrive as an object (Vapi, Retell) or as a JSON string (OpenAI style). Always give back an object. */
+function argumentsOf(raw: unknown): Record<string, unknown> {
+  if (typeof raw === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
 }
 
 /** The agent reads times aloud, so a long list is not helpful. */
@@ -24,15 +45,22 @@ export class VoiceService {
   public static async processWebhook(
     tenantId: string,
     calendarId: string,
-    payload: any
+    payload: any,
+    /** Name of the tool, taken from the web address (?tool=). Needed only when the platform sends the arguments alone. */
+    toolHint?: VoiceToolName
   ): Promise<any> {
     const messageType = payload.message?.type || payload.type;
-    const callSid = payload.message?.call?.id || payload.call_id || payload.call?.id;
+    const callSid = payload.message?.call?.id || payload.call_id || payload.call?.id || payload.call?.call_id;
 
     // Log the incoming call payload asynchronously to prevent request blocking
     this.asyncLogCall(tenantId, callSid, payload).catch((err) =>
       console.error('[VoiceService] Error creating call log:', err)
     );
+
+    // The platform sends only the arguments (Retell "Payload: args only") and the web address names the tool.
+    if (toolHint && !messageType && !payload.name) {
+      return this.executeTool(tenantId, calendarId, { name: toolHint, arguments: argumentsOf(payload), toolCallId: 'flat-tool-call' });
+    }
 
     // Detect and handle flat Custom Tool Call format
     if (!messageType && payload.dateTime) {
@@ -48,14 +76,15 @@ export class VoiceService {
       return result;
     }
 
-    // 1. Check if it's a Vapi Tool Call
+    // 1. Vapi tool call. The calls are in message.toolCallList (older versions: message.toolCalls).
+    //    Vapi needs each result as a SINGLE-LINE STRING, so the answer is written as one line of JSON.
     if (messageType === 'tool-calls') {
-      const toolCalls = payload.message.toolCalls || [];
+      const toolCalls = payload.message.toolCallList || payload.message.toolCalls || [];
       const results = [];
 
       for (const tc of toolCalls) {
         const toolName = tc.function?.name || tc.name;
-        const args = tc.function?.arguments || tc.arguments || {};
+        const args = argumentsOf(tc.function?.arguments ?? tc.arguments ?? tc.parameters);
         const toolCallId = tc.id;
 
         const result = await this.executeTool(tenantId, calendarId, {
@@ -66,19 +95,20 @@ export class VoiceService {
 
         results.push({
           toolCallId,
-          result,
+          result: JSON.stringify(result),
         });
       }
 
       return { results };
     }
 
-    // 2. Check if it's a Retell/Generic Tool Call (where tool call is directly in the root)
-    if (payload.name && payload.tool_call_id) {
+    // 2. Retell custom function ({ name, args, call }) or a generic tool call with the name in the root.
+    //    The answer is returned as a plain JSON object; Retell turns it into text for the agent.
+    if (payload.name && (payload.args || payload.arguments || payload.tool_call_id)) {
       const result = await this.executeTool(tenantId, calendarId, {
         name: payload.name,
-        arguments: payload.arguments || {},
-        toolCallId: payload.tool_call_id,
+        arguments: argumentsOf(payload.args ?? payload.arguments),
+        toolCallId: payload.tool_call_id ?? payload.call?.call_id ?? 'retell-tool-call',
       });
       return result;
     }
@@ -105,9 +135,42 @@ export class VoiceService {
           if (!dateTime) {
             return { success: false, message: 'dateTime parameter is required.' };
           }
-          const parsedDate = new Date(dateTime);
-          if (isNaN(parsedDate.getTime())) {
-            return { success: false, message: 'Invalid dateTime format.' };
+          let parsedDate: Date;
+          try {
+            const schedule = await TenantScheduleService.get(tenantId);
+            parsedDate = parseBookingTime(dateTime, schedule.timeZone);
+            assertBookableSlot(parsedDate, schedule);
+          } catch (error) {
+            // A time outside opening hours is "not available", with the reason, so the agent can propose another.
+            if (error instanceof BookingTimeError) {
+              return { available: false, message: error.message };
+            }
+            throw error;
+          }
+
+          // With consultants, "free" means a consultant who works then and has no booking.
+          if (await ConsultantService.isActive(tenantId)) {
+            try {
+              const schedule = await TenantScheduleService.get(tenantId);
+              const categoryId = await ConsultantService.resolveCategory(tenantId, args.category);
+              const employeeId = await ConsultantService.resolveConsultant(tenantId, args.consultant);
+              const working = await ConsultantService.candidatesAt(tenantId, parsedDate, schedule, { categoryId, employeeId });
+              const free: string[] = [];
+              for (const c of working) {
+                if (await AppointmentService.checkAvailability(tenantId, consultantKey(c.id), parsedDate)) free.push(c.fullName);
+              }
+              return {
+                available: free.length > 0,
+                consultants: free,
+                message:
+                  free.length > 0
+                    ? `Slot is available with ${free.join(', ')}.`
+                    : 'Slot is not available. Please propose another time or another consultant.',
+              };
+            } catch (error) {
+              if (error instanceof ConsultantError) return { available: false, message: error.message };
+              throw error;
+            }
           }
 
           const available = await AppointmentService.checkAvailability(
@@ -133,23 +196,72 @@ export class VoiceService {
             };
           }
 
-          const parsedDate = new Date(dateTime);
-          if (isNaN(parsedDate.getTime())) {
-            return { success: false, message: 'Invalid dateTime format.' };
+          let parsedDate: Date;
+          try {
+            const schedule = await TenantScheduleService.get(tenantId);
+            parsedDate = parseBookingTime(dateTime, schedule.timeZone);
+            assertBookableSlot(parsedDate, schedule);
+          } catch (error) {
+            if (error instanceof BookingTimeError) {
+              return { success: false, message: error.message };
+            }
+            throw error;
           }
 
-          const appointment = await AppointmentService.createAppointment(tenantId, {
-            calendarId,
-            appointmentDateTime: parsedDate,
-            customerName,
-            customerPhone,
-            customerEmail: customerEmail || null,
-          });
+          const schedule = await TenantScheduleService.get(tenantId);
+          let booked;
+          try {
+            booked = await BookingService.book(
+              tenantId,
+              {
+                when: parsedDate,
+                calendarId,
+                customerName,
+                customerPhone,
+                customerEmail: customerEmail || null,
+                consultant: args.consultant,
+                category: args.category,
+              },
+              schedule
+            );
+          } catch (error) {
+            if (error instanceof ConsultantError) return { success: false, message: error.message };
+            throw error;
+          }
 
+          const withWhom = booked.consultant ? ` with ${booked.consultant.fullName}` : '';
           return {
             success: true,
-            appointmentId: appointment.id,
-            message: `Appointment successfully booked for ${customerName} at ${parsedDate.toISOString()}.`,
+            appointmentId: booked.appointment.id,
+            consultant: booked.consultant?.fullName ?? null,
+            // Said in the business's own time zone, never as a UTC timestamp.
+            message: `Appointment successfully booked for ${customerName}${withWhom} on ${AppointmentService.formatForCustomer(parsedDate, true, schedule.timeZone)}.`,
+          };
+        }
+
+        // The free times of one day (optionally for one service and/or one consultant), as the agent should offer them.
+        case 'getAvailableTimes': {
+          const { date, category, consultant } = args;
+          const limit = typeof args.limit === 'number' && args.limit >= 1 ? Math.min(Math.floor(args.limit), 50) : undefined;
+          if (date !== undefined && (typeof date !== 'string' || !isRealDate(date))) {
+            return { success: false, message: 'date must be a real date written YYYY-MM-DD.' };
+          }
+          return VoiceService.checkAvailabilitySlots(tenantId, calendarId, date, undefined, limit, {
+            category: typeof category === 'string' ? category : null,
+            consultant: typeof consultant === 'string' ? consultant : null,
+          });
+        }
+
+        // Who can be booked and for what, so the agent can offer real names and services (nothing invented).
+        case 'listConsultants': {
+          if (!(await ConsultantService.isActive(tenantId))) {
+            return { success: true, consultants: [], categories: [], message: 'This business books one calendar; there are no named consultants.' };
+          }
+          const [consultants, categories] = await Promise.all([ConsultantService.list(tenantId), ConsultantService.categories(tenantId)]);
+          return {
+            success: true,
+            categories: categories.map((c) => c.name),
+            consultants: consultants.map((c) => ({ name: c.fullName, title: c.title, services: c.categories.map((x) => x.name) })),
           };
         }
 
@@ -319,8 +431,9 @@ export class VoiceService {
     tenantId: string,
     calendarId: string,
     date?: string,
-    timeZone: string = config.DEFAULT_TIME_ZONE,
-    limit: number = MAX_SPOKEN_SLOTS
+    callerTimeZone?: string,
+    limit: number = MAX_SPOKEN_SLOTS,
+    filter: { category?: string | null; consultant?: string | null } = {}
   ): Promise<{
     responseText: string;
     closed: boolean;
@@ -328,16 +441,49 @@ export class VoiceService {
     unavailable: boolean;
     availableSlots: string[];
     availableSlotsIso: string[];
+    /** For each time above, the consultants who are free then (empty when the business has no consultants). */
+    slotConsultants: string[][];
     totalFree: number;
     executionTimeMs: number;
     cached?: boolean;
   }> {
     const startTime = Date.now();
+    // The business's own time zone decides the hours. A zone sent by the caller is ignored, unless the
+    // business has none of its own AND the caller sends one (never the case over HTTP: see the controller).
+    const timeZone = callerTimeZone ?? (await TenantScheduleService.get(tenantId)).timeZone;
     const targetDate = date || todayIn(timeZone);
-    const cacheKey = SlotCacheService.buildKey(tenantId, calendarId, targetDate, timeZone);
+
+    // With consultants, free times are per consultant, narrowed by the service and/or the person asked for.
+    const consultantMode = await ConsultantService.isActive(tenantId);
+    let categoryId: string | null = null;
+    let employeeId: string | null = null;
+    if (consultantMode) {
+      try {
+        categoryId = await ConsultantService.resolveCategory(tenantId, filter.category);
+        employeeId = await ConsultantService.resolveConsultant(tenantId, filter.consultant);
+      } catch (error) {
+        if (error instanceof ConsultantError) {
+          // Say plainly what could not be found; never fall back to someone else's times.
+          return {
+            responseText: error.message,
+            closed: false,
+            unavailable: false,
+            availableSlots: [],
+            availableSlotsIso: [],
+            slotConsultants: [],
+            totalFree: 0,
+            executionTimeMs: Date.now() - startTime,
+            cached: false,
+          };
+        }
+        throw error;
+      }
+    }
+    const scope = consultantMode ? `cons:${categoryId ?? '-'}:${employeeId ?? '-'}` : calendarId;
+    const cacheKey = SlotCacheService.buildKey(tenantId, scope, targetDate, timeZone);
 
     // The cache holds every free time for the day; the answer is cut to `limit` for each request.
-    type FullDay = { closed: boolean; slotsIso: string[] };
+    type FullDay = { closed: boolean; slotsIso: string[]; consultants: string[][] };
     const answer = (full: FullDay, cached: boolean) => {
       const spokenIso = full.slotsIso.slice(0, limit);
       const labels = spokenIso.map((iso) =>
@@ -361,6 +507,7 @@ export class VoiceService {
         unavailable: false,
         availableSlots: labels,
         availableSlotsIso: spokenIso,
+        slotConsultants: full.consultants.slice(0, limit),
         totalFree: full.slotsIso.length,
         executionTimeMs: Date.now() - startTime,
         cached,
@@ -373,8 +520,19 @@ export class VoiceService {
     }
 
     try {
-      const { closed, slots } = await AvailabilityService.getFreeSlots(tenantId, calendarId, targetDate, timeZone);
-      const full: FullDay = { closed, slotsIso: slots.map((slot) => slot.toISOString()) };
+      let full: FullDay;
+      if (consultantMode) {
+        const schedule = await TenantScheduleService.get(tenantId);
+        const day = await ConsultantService.getFreeSlots(tenantId, targetDate, schedule, { categoryId, employeeId });
+        full = {
+          closed: day.closed,
+          slotsIso: day.slots.map((slot) => slot.start.toISOString()),
+          consultants: day.slots.map((slot) => slot.consultants.map((c) => c.fullName)),
+        };
+      } else {
+        const { closed, slots } = await AvailabilityService.getFreeSlots(tenantId, calendarId, targetDate, timeZone);
+        full = { closed, slotsIso: slots.map((slot) => slot.toISOString()), consultants: slots.map(() => []) };
+      }
       slotCacheService.set(cacheKey, full, 30);
       return answer(full, false);
     } catch (error) {
@@ -389,6 +547,7 @@ export class VoiceService {
         unavailable: true,
         availableSlots: [],
         availableSlotsIso: [],
+        slotConsultants: [],
         totalFree: 0,
         executionTimeMs: Date.now() - startTime,
         cached: false,

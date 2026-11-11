@@ -5,6 +5,14 @@ import { EmailService } from './email.service';
 import { TIMEOUTS, TRANSACTION_OPTIONS } from '../config/timeouts';
 import { config } from '../config';
 import { slotCacheService } from './slot-cache.service';
+import { isBookableSlot } from './booking-time';
+import { TenantScheduleService } from './tenant-schedule.service';
+import { isConsultantKey } from './consultants/consultant.service';
+
+/** The Google calendar for events. A consultant's booking key is not a Google calendar: events go to the default one. */
+function googleCalendarOf(calendarId: string): string {
+  return isConsultantKey(calendarId) ? config.GOOGLE_DEFAULT_CALENDAR_ID : calendarId;
+}
 
 /**
  * Every booking is this long. The Appointment table does not store a duration, so an
@@ -78,7 +86,11 @@ export class AppointmentService {
       return false;
     }
 
-    // 2. Check external Google Calendar
+    // 2. Check external Google Calendar. A consultant's own booking key is not a Google calendar: their
+    // availability is the local appointments only (see consultant.service.ts).
+    if (isConsultantKey(calendarId)) {
+      return true;
+    }
     const googleAvailable = await GoogleCalendarService.checkAvailability(
       tenantId,
       calendarId,
@@ -107,10 +119,23 @@ export class AppointmentService {
     // is never left waiting through many slow checks in a row.
     const deadline = Date.now() + TIMEOUTS.NEXT_SLOT_SEARCH_MS;
 
-    for (let i = 0; i < maxSearchSteps; i++) {
+    // Only times that can really be booked are suggested (inside opening hours, on the grid).
+    // Skipping a closed night or weekend costs no database call, so it does not use up a step.
+    const schedule = await TenantScheduleService.get(tenantId);
+    const MAX_SKIPPED = 400; // 400 half-hours = more than 8 days
+    let skipped = 0;
+    let checks = 0;
+
+    while (checks < maxSearchSteps) {
       if (Date.now() >= deadline) {
         return null;
       }
+      if (!isBookableSlot(currentCheck, schedule)) {
+        if (++skipped > MAX_SKIPPED) return null;
+        currentCheck = new Date(currentCheck.getTime() + durationMinutes * 60000);
+        continue;
+      }
+      checks += 1;
       const isAvailable = await this.checkAvailability(
         tenantId,
         calendarId,
@@ -141,6 +166,9 @@ export class AppointmentService {
       customerPhone: string;
       customerEmail?: string | null;
       durationMinutes?: number;
+      /** The consultant and the service this booking is for (consultant mode). */
+      employeeId?: string | null;
+      categoryId?: string | null;
     }
   ): Promise<any> {
     if (data.appointmentDateTime.getTime() < Date.now() - PAST_GRACE_MS) {
@@ -171,7 +199,8 @@ export class AppointmentService {
         return justBooked;
       }
 
-      const nextSlot = await this.findNextAvailableSlot(
+      // For a consultant the caller chooses another time or another consultant; no one-calendar suggestion.
+      const nextSlot = isConsultantKey(data.calendarId) ? null : await this.findNextAvailableSlot(
         tenantId,
         data.calendarId,
         data.appointmentDateTime,
@@ -179,7 +208,7 @@ export class AppointmentService {
       );
 
       if (nextSlot) {
-        const formattedTime = this.formatForCustomer(nextSlot, true);
+        const formattedTime = this.formatForCustomer(nextSlot, true, (await TenantScheduleService.get(tenantId)).timeZone);
         throw new Error(`The requested slot is already booked. The next available slot is on ${formattedTime}. Would you like to book that instead?`);
       }
 
@@ -216,6 +245,8 @@ export class AppointmentService {
             customerName: data.customerName,
             customerPhone: data.customerPhone,
             customerEmail: data.customerEmail || null,
+            employeeId: data.employeeId ?? null,
+            categoryId: data.categoryId ?? null,
             status: 'SCHEDULED',
           },
         });
@@ -241,6 +272,8 @@ export class AppointmentService {
           customerName: data.customerName,
           customerPhone: data.customerPhone,
           customerEmail: data.customerEmail || null,
+          employeeId: data.employeeId ?? null,
+          categoryId: data.categoryId ?? null,
           googleEventId: null,
           joinToken: null,
           meetingUrl: null,
@@ -290,9 +323,9 @@ export class AppointmentService {
    * A time as the customer should read or hear it: in DEFAULT_TIME_ZONE, never the server's
    * zone (the container runs in UTC). Stored times stay in UTC.
    */
-  private static formatForCustomer(date: Date, withWeekday = false): string {
+  public static formatForCustomer(date: Date, withWeekday = false, timeZone: string = config.DEFAULT_TIME_ZONE): string {
     return new Intl.DateTimeFormat('en-US', {
-      timeZone: config.DEFAULT_TIME_ZONE,
+      timeZone,
       ...(withWeekday ? { weekday: 'long' as const, month: 'long' as const } : { month: 'short' as const }),
       year: 'numeric',
       day: 'numeric',
@@ -338,7 +371,7 @@ export class AppointmentService {
     try {
       const googleEventId = await GoogleCalendarService.createEvent(
         tenantId,
-        calendarId,
+        googleCalendarOf(calendarId),
         details
       );
 
@@ -437,7 +470,7 @@ export class AppointmentService {
     // If synchronized with Google Calendar, cancel there
     if (appointment.googleEventId) {
       try {
-        await GoogleCalendarService.deleteEvent(tenantId, appointment.calendarId, appointment.googleEventId);
+        await GoogleCalendarService.deleteEvent(tenantId, googleCalendarOf(appointment.calendarId), appointment.googleEventId);
       } catch (error) {
         console.warn(`[AppointmentService] Non-fatal error deleting calendar event on cancellation:`, error);
       }

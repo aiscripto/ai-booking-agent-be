@@ -40,6 +40,14 @@ automated check in `scripts/verify.sh`.
 | R6 | Every external network call has `try/catch` and a defined fallback. | `guards/external-calls.sh` |
 | R7 | `npx tsc --noEmit` passes with zero errors. | `verify.sh` |
 | R8 | No new work inside the request/response cycle of a voice call. | review |
+| R9 | **No fabricated data.** An API answer, seed, fallback or log never invents values or reports success that did not happen. | review only (cannot be automated) |
+
+**R9 in plain words (owner rule, 2026-11-04):**
+- When a call fails or data is missing, say so (an error or an empty result). Never return made-up slots, ids, names,
+  prices, summaries or counts to look helpful.
+- Never report success for work that was not done (a booking, a message, a payment, a calendar event).
+- Seed and demo scripts must not write invented customers, phones or appointments into a real tenant.
+- If something is not configured (for example Google Calendar), the answer says it is not connected.
 
 R1–R6 carry a **baseline ratchet** (§9): pre-existing violations are recorded and
 tolerated, but the count must never increase.

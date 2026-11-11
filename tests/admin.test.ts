@@ -7,6 +7,8 @@ import { createStaff, removeStaff, bearer, TestStaff } from './helpers/auth';
 const app = require('../src/app').default || require('../src/app');
 
 const api = '/api/v1/admin';
+const weekdays = Array.from({ length: 7 }, (_, day) => (day >= 1 && day <= 5 ? [{ start: '09:00', end: '17:00' }] : []));
+const when = { timeZone: 'America/New_York', businessHours: weekdays };
 
 describe('Admin setup panel', () => {
   // One server for the whole file, so a request can never be answered by another test's throwaway server.
@@ -71,13 +73,13 @@ describe('Admin setup panel', () => {
 
   describe('business', () => {
     it('saves details, and refuses half a map position or a bad email', async () => {
-      const ok = await put('/business', { name: 'Test Clinic', phone: '555 0100', email: 'Info@Test.Example', city: 'Austin', latitude: 30.27, longitude: -97.74 });
+      const ok = await put('/business', { ...when, name: 'Test Clinic', phone: '555 0100', email: 'Info@Test.Example', city: 'Austin', latitude: 30.27, longitude: -97.74 });
       expect(ok.status).toBe(200);
       expect(ok.body.data).toMatchObject({ name: 'Test Clinic', email: 'info@test.example', latitude: 30.27, longitude: -97.74 });
-      expect((await put('/business', { name: 'X', latitude: 30 })).status).toBe(400);
-      expect((await put('/business', { name: 'X', latitude: 95, longitude: 10 })).status).toBe(400);
-      expect((await put('/business', { name: 'X', email: 'nope' })).status).toBe(400);
-      expect((await put('/business', { name: '' })).status).toBe(400);
+      expect((await put('/business', { ...when, name: 'X', latitude: 30 })).status).toBe(400);
+      expect((await put('/business', { ...when, name: 'X', latitude: 95, longitude: 10 })).status).toBe(400);
+      expect((await put('/business', { ...when, name: 'X', email: 'nope' })).status).toBe(400);
+      expect((await put('/business', { ...when, name: '' })).status).toBe(400);
     });
 
     it('never changes another tenant', async () => {

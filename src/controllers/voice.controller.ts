@@ -15,7 +15,9 @@ export class VoiceController {
   ): Promise<void> {
     try {
       // 1. Simple Security API Key Verification
-      const apiKey = req.headers['x-api-key'] || req.headers['authorization'];
+      // The key can arrive as x-api-key, as Authorization: Bearer <key> (Vapi "Bearer" credential),
+      // or as x-vapi-secret (Vapi "Secret" credential).
+      const apiKey = req.headers['x-api-key'] || req.headers['authorization'] || req.headers['x-vapi-secret'];
       
       // Support bearer or simple string format
       const clientKey = typeof apiKey === 'string' && apiKey.startsWith('Bearer ') 
@@ -41,13 +43,14 @@ export class VoiceController {
         return;
       }
 
-      const { tenant_id: tenantId, calendar_id: calendarId } = queryValidation.data;
+      const { tenant_id: tenantId, calendar_id: calendarId, tool } = queryValidation.data;
 
       // 3. Process the Webhook payload
       const result = await VoiceService.processWebhook(
         tenantId,
         calendarId,
-        req.body
+        req.body,
+        tool
       );
 
       res.status(200).json(result);
@@ -77,8 +80,9 @@ export class VoiceController {
         return;
       }
 
-      const { tenant_id, calendar_id, date, timeZone, limit } = validation.data;
-      const result = await VoiceService.checkAvailabilitySlots(tenant_id, calendar_id, date, timeZone, limit);
+      // The caller's timeZone (if any) is not used: the business's own zone decides the opening hours.
+      const { tenant_id, calendar_id, date, limit, category, consultant } = validation.data;
+      const result = await VoiceService.checkAvailabilitySlots(tenant_id, calendar_id, date, undefined, limit, { category, consultant });
 
       res.status(200).json({
         status: 'success',

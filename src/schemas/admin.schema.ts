@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { ALL_PERMISSIONS, isPermission } from '../config/permissions';
+import { hasOpenDay, weeklyHoursSchema } from '../services/business-hours';
+import { isValidTimeZone } from '../services/tenant-schedule.service';
 
 /** Text from a form: trimmed, and an empty box means "nothing" (null). */
 const text = (max: number) =>
@@ -38,6 +40,8 @@ export const businessSchema = z.object({
   zip: text(20),
   latitude: z.number().min(-90).max(90).nullish().transform((v) => v ?? null),
   longitude: z.number().min(-180).max(180).nullish().transform((v) => v ?? null),
+  timeZone: z.string().trim().min(1, 'Choose a time zone.').refine(isValidTimeZone, { message: 'That is not a valid time zone (for example America/New_York).' }),
+  businessHours: weeklyHoursSchema.refine(hasOpenDay, { message: 'Open at least one day, or nobody can book.' }),
 }).refine((v) => (v.latitude === null) === (v.longitude === null), {
   message: 'Give both latitude and longitude, or neither.',
   path: ['latitude'],
@@ -70,6 +74,12 @@ export const employeeSchema = z.object({
   roleId: optionalId,
   managerId: optionalId,
   isActive: z.boolean().default(true),
+  // Consultant: takes appointments. `title` is what the voice agent says; `categoryIds` are the services
+  // they offer; `workingHours` is their own week (null = they follow the business hours).
+  isBookable: z.boolean().default(false),
+  title: text(120),
+  categoryIds: z.array(z.string().uuid()).max(50).default([]).transform((ids) => [...new Set(ids)]),
+  workingHours: weeklyHoursSchema.nullish().transform((v) => v ?? null),
 });
 export type EmployeeInput = z.infer<typeof employeeSchema>;
 
@@ -122,3 +132,17 @@ export const updateUserSchema = z.object({
   isActive: z.boolean(),
 });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+
+export const categorySchema = z.object({
+  name: requiredText(80),
+  description: text(300),
+  isActive: z.boolean().default(true),
+});
+export type CategoryInput = z.infer<typeof categorySchema>;
+
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-12-24.').refine((d) => !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d, { message: 'That date does not exist.' });
+
+export const timeOffSchema = z
+  .object({ startDate: calendarDate, endDate: calendarDate, note: text(200) })
+  .refine((v) => v.endDate >= v.startDate, { message: 'The last day cannot be before the first day.', path: ['endDate'] });
+export type TimeOffInput = z.infer<typeof timeOffSchema>;

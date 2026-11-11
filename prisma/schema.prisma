@@ -36,35 +36,41 @@ enum BookingStatus {
 }
 
 model Tenant {
-  id          String       @id @default(uuid()) @db.Uuid
-  name        String
-  industry    IndustryType @default(GENERAL)
-  branding    Json?        @map("branding")
-  calApiKey   String?      @map("cal_api_key")
-  calTeamId   Int?         @map("cal_team_id")
-  isActive    Boolean      @default(true) @map("is_active")
+  id            String       @id @default(uuid()) @db.Uuid
+  name          String
+  industry      IndustryType @default(GENERAL)
+  branding      Json?        @map("branding")
+  calApiKey     String?      @map("cal_api_key")
+  calTeamId     Int?         @map("cal_team_id")
+  isActive      Boolean      @default(true) @map("is_active")
   // Business details (Setup > Business)
-  phone       String?
-  email       String?
-  address     String?
-  city        String?
-  state       String?
-  zip         String?
-  latitude    Float?
-  longitude   Float?
+  phone         String?
+  email         String?
+  address       String?
+  city          String?
+  state         String?
+  zip           String?
+  latitude      Float?
+  longitude     Float?
+  // Opening hours: seven lists (Sunday first) of {start, end} ranges. Empty = not set (server defaults apply).
+  businessHours Json?        @map("business_hours")
+  // IANA time zone of the business, for example "America/New_York". Empty = the server default.
+  timeZone      String?      @map("time_zone")
   // Last employee number handed out; the next employee gets this + 1 (assigned by the system)
-  employeeSeq Int          @default(0) @map("employee_seq")
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @updatedAt @map("updated_at")
+  employeeSeq   Int          @default(0) @map("employee_seq")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  users            User[]
-  grades           Grade[]
-  employees        Employee[]
-  roles            Role[]
-  voiceAgents      VoiceAgent[]
-  appointments     Appointment[] // Legacy appointment model for backward compatibility
-  callLogs         CallLog[]
-  googleCredential GoogleCredential?
+  users             User[]
+  grades            Grade[]
+  serviceCategories ServiceCategory[]
+  employeeTimeOff   EmployeeTimeOff[]
+  employees         Employee[]
+  roles             Role[]
+  voiceAgents       VoiceAgent[]
+  appointments      Appointment[] // Legacy appointment model for backward compatibility
+  callLogs          CallLog[]
+  googleCredential  GoogleCredential?
 
   // Universal Multi-Tenant Relations
   resources    Resource[]
@@ -250,17 +256,22 @@ model VoiceAgent {
 }
 
 model Appointment {
-  id                  String   @id @default(uuid()) @db.Uuid
-  tenantId            String   @map("tenant_id") @db.Uuid
-  tenant              Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  calendarId          String   @map("calendar_id")
-  appointmentDateTime DateTime @map("appointment_date_time")
-  customerName        String   @map("customer_name")
-  customerPhone       String   @map("customer_phone")
-  customerEmail       String?  @map("customer_email")
-  status              String   @default("SCHEDULED")
-  googleEventId       String?  @map("google_event_id")
-  isActive            Boolean  @default(true) @map("is_active")
+  id                  String           @id @default(uuid()) @db.Uuid
+  tenantId            String           @map("tenant_id") @db.Uuid
+  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  calendarId          String           @map("calendar_id")
+  appointmentDateTime DateTime         @map("appointment_date_time")
+  customerName        String           @map("customer_name")
+  customerPhone       String           @map("customer_phone")
+  customerEmail       String?          @map("customer_email")
+  status              String           @default("SCHEDULED")
+  googleEventId       String?          @map("google_event_id")
+  isActive            Boolean          @default(true) @map("is_active")
+  // Who the appointment is with (a consultant), and what it is for. Empty for older bookings.
+  employeeId          String?          @map("employee_id") @db.Uuid
+  employee            Employee?        @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  categoryId          String?          @map("category_id") @db.Uuid
+  category            ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
   // ── Telehealth ────────────────────────────────────────────────────────────
   // The opaque id in the stable link sent to the customer
@@ -281,6 +292,7 @@ model Appointment {
   @@index([tenantId])
   @@index([calendarId])
   @@index([appointmentDateTime])
+  @@index([employeeId])
   @@map("appointments")
 }
 
@@ -344,26 +356,34 @@ model Grade {
 /// A person who works for the business. Different from a login (User) and from a bookable
 /// provider (Resource). `code` is assigned by the system (EMP-0001, EMP-0002, ...).
 model Employee {
-  id           String      @id @default(uuid()) @db.Uuid
-  tenantId     String      @map("tenant_id") @db.Uuid
-  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id           String            @id @default(uuid()) @db.Uuid
+  tenantId     String            @map("tenant_id") @db.Uuid
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   code         String
-  fullName     String      @map("full_name")
+  fullName     String            @map("full_name")
   email        String?
   phone        String?
-  departmentId String?     @map("department_id") @db.Uuid
-  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  gradeId      String?     @map("grade_id") @db.Uuid
-  grade        Grade?      @relation(fields: [gradeId], references: [id], onDelete: SetNull)
-  roleId       String?     @map("role_id") @db.Uuid
-  role         Role?       @relation(fields: [roleId], references: [id], onDelete: SetNull)
-  managerId    String?     @map("manager_id") @db.Uuid
-  manager      Employee?   @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
-  reports      Employee[]  @relation("EmployeeManager")
-  isActive     Boolean     @default(true) @map("is_active")
+  departmentId String?           @map("department_id") @db.Uuid
+  department   Department?       @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  gradeId      String?           @map("grade_id") @db.Uuid
+  grade        Grade?            @relation(fields: [gradeId], references: [id], onDelete: SetNull)
+  roleId       String?           @map("role_id") @db.Uuid
+  role         Role?             @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  managerId    String?           @map("manager_id") @db.Uuid
+  manager      Employee?         @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports      Employee[]        @relation("EmployeeManager")
+  isActive     Boolean           @default(true) @map("is_active")
+  // Consultant: takes appointments. `title` is what the voice agent says (for example "cardiologist").
+  isBookable   Boolean           @default(false) @map("is_bookable")
+  title        String?
+  // Own weekly hours (seven lists, Sunday first). Empty = follows the business hours.
+  workingHours Json?             @map("working_hours")
+  categories   ServiceCategory[]
+  timeOff      EmployeeTimeOff[]
+  appointments Appointment[]
   user         User?
-  createdAt    DateTime    @default(now()) @map("created_at")
-  updatedAt    DateTime    @updatedAt @map("updated_at")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
 
   @@unique([tenantId, code])
   @@index([tenantId])
@@ -392,4 +412,39 @@ model Role {
   @@unique([tenantId, code])
   @@index([tenantId])
   @@map("roles")
+}
+
+/// What a caller books, for example "Dentist" or "Tax advice". Different from a Department (how the business
+/// is organized): one consultant can serve several categories.
+model ServiceCategory {
+  id           String        @id @default(uuid()) @db.Uuid
+  tenantId     String        @map("tenant_id") @db.Uuid
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name         String
+  description  String?
+  isActive     Boolean       @default(true) @map("is_active")
+  employees    Employee[]
+  appointments Appointment[]
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("service_categories")
+}
+
+/// A whole-day absence of a consultant (holiday, leave). Dates are calendar dates in the business time zone.
+model EmployeeTimeOff {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId String   @map("employee_id") @db.Uuid
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  startDate  DateTime @map("start_date") @db.Date
+  endDate    DateTime @map("end_date") @db.Date
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, employeeId])
+  @@map("employee_time_off")
 }

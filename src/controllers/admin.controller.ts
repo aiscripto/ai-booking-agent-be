@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { PERMISSIONS } from '../config/permissions';
 import {
   businessSchema,
+  categorySchema,
+  timeOffSchema,
   createUserSchema,
   departmentSchema,
   employeeSchema,
@@ -13,6 +15,7 @@ import {
 } from '../schemas/admin.schema';
 import { BusinessService } from '../services/admin/business.service';
 import { GradeService } from '../services/admin/grade.service';
+import { CategoryService } from '../services/admin/category.service';
 import { DepartmentService } from '../services/admin/department.service';
 import { EmployeeService } from '../services/admin/employee.service';
 import { RoleService } from '../services/admin/role.service';
@@ -80,6 +83,24 @@ export class AdminController {
     ok(res, await EmployeeService.create(tenantId, employeeSchema.parse(req.body)), 201));
   public static updateEmployee = admin(async (req, res, tenantId) =>
     ok(res, await EmployeeService.update(tenantId, idOf(req), employeeSchema.parse(req.body))));
+
+  public static listCategories = admin(async (_req, res, tenantId) => ok(res, await CategoryService.list(tenantId)));
+  public static createCategory = admin(async (req, res, tenantId) =>
+    ok(res, await CategoryService.create(tenantId, categorySchema.parse(req.body)), 201));
+  public static updateCategory = admin(async (req, res, tenantId) =>
+    ok(res, await CategoryService.update(tenantId, idOf(req), categorySchema.parse(req.body))));
+  public static deleteCategory = admin(async (req, res, tenantId) => {
+    await CategoryService.remove(tenantId, idOf(req));
+    ok(res, { deleted: true });
+  });
+
+  public static listTimeOff = admin(async (req, res, tenantId) => ok(res, await EmployeeService.listTimeOff(tenantId, idOf(req))));
+  public static addTimeOff = admin(async (req, res, tenantId) =>
+    ok(res, await EmployeeService.addTimeOff(tenantId, idOf(req), timeOffSchema.parse(req.body)), 201));
+  public static removeTimeOff = admin(async (req, res, tenantId) => {
+    await EmployeeService.removeTimeOff(tenantId, idOf(req));
+    ok(res, { deleted: true });
+  });
 
   public static listRoles = admin(async (_req, res, tenantId) => ok(res, await RoleService.list(tenantId)));
   public static createRole = admin(async (req, res, tenantId) =>

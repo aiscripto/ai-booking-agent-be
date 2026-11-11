@@ -2,6 +2,8 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: ['**/*.test.ts'],
+  // One server per test file instead of one per request (see the helper for why).
+  moduleNameMapper: { '^supertest$': '<rootDir>/tests/helpers/supertest-shared-server.ts' },
   setupFiles: ['<rootDir>/tests/setup-env.js'],
   verbose: true,
   forceExit: true,
