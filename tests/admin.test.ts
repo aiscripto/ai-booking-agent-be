@@ -73,9 +73,10 @@ describe('Admin setup panel', () => {
 
   describe('business', () => {
     it('saves details, and refuses half a map position or a bad email', async () => {
-      const ok = await put('/business', { ...when, name: 'Test Clinic', phone: '555 0100', email: 'Info@Test.Example', city: 'Austin', latitude: 30.27, longitude: -97.74 });
+      const ok = await put('/business', { ...when, name: 'Test Clinic', phone: '555 0100', email: 'Info@Test.Example', city: 'Austin', state: 'TX', country: 'us', latitude: 30.27, longitude: -97.74 });
       expect(ok.status).toBe(200);
-      expect(ok.body.data).toMatchObject({ name: 'Test Clinic', email: 'info@test.example', latitude: 30.27, longitude: -97.74 });
+      expect(ok.body.data).toMatchObject({ name: 'Test Clinic', email: 'info@test.example', country: 'US', state: 'TX', latitude: 30.27, longitude: -97.74 });
+      expect((await put('/business', { ...when, name: 'X', country: 'USA' })).status).toBe(400);
       expect((await put('/business', { ...when, name: 'X', latitude: 30 })).status).toBe(400);
       expect((await put('/business', { ...when, name: 'X', latitude: 95, longitude: 10 })).status).toBe(400);
       expect((await put('/business', { ...when, name: 'X', email: 'nope' })).status).toBe(400);

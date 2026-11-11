@@ -118,6 +118,8 @@ describe('Consultants and service categories', () => {
       expect(res.body.data.totalFree).toBe(16); // Bob covers the whole day
       const at = (iso: string) => names[times.indexOf(iso)];
       expect(at('2031-01-06T15:00:00.000Z')).toEqual(['Ann Adams', 'Bob Brown']); // 10:00 New York: both work
+      const ids: string[][] = res.body.data.slotConsultantIds;
+      expect(ids[times.indexOf('2031-01-06T15:00:00.000Z')]).toEqual([ann, bob]); // the same people, as ids
       expect(at('2031-01-06T20:00:00.000Z')).toEqual(['Bob Brown']); // 15:00 New York: Ann has finished
     });
 

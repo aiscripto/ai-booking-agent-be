@@ -37,6 +37,13 @@ export const businessSchema = z.object({
   address: text(200),
   city: text(80),
   state: text(80),
+  // ISO country code, two capital letters (US, CA, GB ...). Empty = not set.
+  country: z
+    .string()
+    .trim()
+    .nullish()
+    .transform((v) => (v ? v.toUpperCase() : null))
+    .refine((v) => v === null || /^[A-Z]{2}$/.test(v), { message: 'Use a two-letter country code, for example US.' }),
   zip: text(20),
   latitude: z.number().min(-90).max(90).nullish().transform((v) => v ?? null),
   longitude: z.number().min(-180).max(180).nullish().transform((v) => v ?? null),

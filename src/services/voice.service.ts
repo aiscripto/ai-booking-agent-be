@@ -443,6 +443,8 @@ export class VoiceService {
     availableSlotsIso: string[];
     /** For each time above, the consultants who are free then (empty when the business has no consultants). */
     slotConsultants: string[][];
+    /** The same consultants as ids, so a screen can match them to its own list. */
+    slotConsultantIds: string[][];
     totalFree: number;
     executionTimeMs: number;
     cached?: boolean;
@@ -471,6 +473,7 @@ export class VoiceService {
             availableSlots: [],
             availableSlotsIso: [],
             slotConsultants: [],
+            slotConsultantIds: [],
             totalFree: 0,
             executionTimeMs: Date.now() - startTime,
             cached: false,
@@ -483,7 +486,7 @@ export class VoiceService {
     const cacheKey = SlotCacheService.buildKey(tenantId, scope, targetDate, timeZone);
 
     // The cache holds every free time for the day; the answer is cut to `limit` for each request.
-    type FullDay = { closed: boolean; slotsIso: string[]; consultants: string[][] };
+    type FullDay = { closed: boolean; slotsIso: string[]; consultants: string[][]; consultantIds: string[][] };
     const answer = (full: FullDay, cached: boolean) => {
       const spokenIso = full.slotsIso.slice(0, limit);
       const labels = spokenIso.map((iso) =>
@@ -508,6 +511,7 @@ export class VoiceService {
         availableSlots: labels,
         availableSlotsIso: spokenIso,
         slotConsultants: full.consultants.slice(0, limit),
+        slotConsultantIds: full.consultantIds.slice(0, limit),
         totalFree: full.slotsIso.length,
         executionTimeMs: Date.now() - startTime,
         cached,
@@ -528,10 +532,11 @@ export class VoiceService {
           closed: day.closed,
           slotsIso: day.slots.map((slot) => slot.start.toISOString()),
           consultants: day.slots.map((slot) => slot.consultants.map((c) => c.fullName)),
+          consultantIds: day.slots.map((slot) => slot.consultants.map((c) => c.id)),
         };
       } else {
         const { closed, slots } = await AvailabilityService.getFreeSlots(tenantId, calendarId, targetDate, timeZone);
-        full = { closed, slotsIso: slots.map((slot) => slot.toISOString()), consultants: slots.map(() => []) };
+        full = { closed, slotsIso: slots.map((slot) => slot.toISOString()), consultants: slots.map(() => []), consultantIds: slots.map(() => []) };
       }
       slotCacheService.set(cacheKey, full, 30);
       return answer(full, false);
@@ -548,6 +553,7 @@ export class VoiceService {
         availableSlots: [],
         availableSlotsIso: [],
         slotConsultants: [],
+        slotConsultantIds: [],
         totalFree: 0,
         executionTimeMs: Date.now() - startTime,
         cached: false,

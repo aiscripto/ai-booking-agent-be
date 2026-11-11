@@ -12,6 +12,7 @@ const select = {
   address: true,
   city: true,
   state: true,
+  country: true,
   zip: true,
   latitude: true,
   longitude: true,

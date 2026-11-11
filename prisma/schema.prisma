@@ -52,6 +52,8 @@ model Tenant {
   zip           String?
   latitude      Float?
   longitude     Float?
+  // ISO 3166-1 country code (for example "US"). The state is stored as its ISO code in `state`.
+  country       String?
   // Opening hours: seven lists (Sunday first) of {start, end} ranges. Empty = not set (server defaults apply).
   businessHours Json?        @map("business_hours")
   // IANA time zone of the business, for example "America/New_York". Empty = the server default.
