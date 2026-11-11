@@ -4,14 +4,21 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { prisma } from './db.service';
 import { AuthCache } from './auth-cache';
+import { ALL_PERMISSIONS, BUILT_IN_ROLES, isPermission, Permission } from '../config/permissions';
 
 export type StaffRole = 'ADMIN' | 'PROVIDER' | 'FRONT_DESK' | 'PATIENT';
 
 export interface AuthContext {
   userId: string;
   tenantId: string;
+  /** The built-in role stored on the user (kept for older code and tokens). */
   role: StaffRole;
+  /** What the user may do now, from their role. Checked by requirePermission. */
+  permissions: Permission[];
 }
+
+/** The part of the context that goes into the token. Permissions are never trusted from a token. */
+export type TokenClaims = Pick<AuthContext, 'userId' | 'tenantId' | 'role'>;
 
 export interface PublicUser {
   id: string;
@@ -19,6 +26,10 @@ export interface PublicUser {
   name: string | null;
   role: StaffRole;
   tenantId: string;
+  /** Name of the user's role, for display. */
+  roleName: string;
+  /** What the user may do. The frontend uses this to hide screens; the server checks it again. */
+  permissions: Permission[];
 }
 
 const ISSUER = 'booking-agent';
@@ -59,7 +70,54 @@ export class AuthError extends Error {
   }
 }
 
+type RoleRow = { code: string; permissions: string[]; isActive: boolean } | null;
+
+/**
+ * What a user may do. A role that was switched off grants nothing. Without a role row the
+ * built-in defaults for the user's stored role apply. The built-in ADMIN role always has
+ * everything, so an admin cannot be locked out by editing roles.
+ */
+export function resolvePermissions(builtIn: StaffRole, row: RoleRow): Permission[] {
+  if (builtIn === 'ADMIN' && (!row || row.code === 'ADMIN')) return [...ALL_PERMISSIONS];
+  if (!row) return [...BUILT_IN_ROLES[builtIn].permissions];
+  if (!row.isActive) return [];
+  return row.permissions.filter(isPermission);
+}
+
+type UserForAccess = {
+  id: string;
+  email: string;
+  name: string | null;
+  role: StaffRole;
+  tenantId: string;
+  roleRef?: { code: string; name: string; permissions: string[]; isActive: boolean } | null;
+};
+
 export class AuthService {
+  /** Adds the role's permissions to a user row (one extra read only when the user has no role link). */
+  private static async withAccess(user: UserForAccess): Promise<{ ctx: AuthContext; publicUser: PublicUser }> {
+    let row = user.roleRef ?? null;
+    if (!row) {
+      row = await prisma.role.findFirst({
+        where: { tenantId: user.tenantId, code: user.role },
+        select: { code: true, name: true, permissions: true, isActive: true },
+      });
+    }
+    const permissions = resolvePermissions(user.role, row);
+    return {
+      ctx: { userId: user.id, tenantId: user.tenantId, role: user.role, permissions },
+      publicUser: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        tenantId: user.tenantId,
+        roleName: row?.name ?? BUILT_IN_ROLES[user.role].name,
+        permissions,
+      },
+    };
+  }
+
   public static hashPassword(password: string, rounds: number = BCRYPT_ROUNDS): Promise<string> {
     return bcrypt.hash(password, rounds);
   }
@@ -71,6 +129,7 @@ export class AuthService {
   public static async login(email: string, password: string): Promise<AuthResult> {
     const user = await prisma.user.findFirst({
       where: { email: { equals: email, mode: 'insensitive' }, isActive: true },
+      include: { roleRef: true },
     });
 
     const matches = await bcrypt.compare(password, user ? user.passwordHash : await getDummyHash());
@@ -78,17 +137,11 @@ export class AuthService {
       throw new AuthError('Invalid email or password.');
     }
 
-    const ctx: AuthContext = { userId: user.id, tenantId: user.tenantId, role: user.role };
+    const { ctx, publicUser } = await AuthService.withAccess(user);
     return {
       token: AuthService.signToken(ctx),
       refreshToken: AuthService.signRefreshToken(ctx, user.updatedAt, Math.floor(Date.now() / 1000)),
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        tenantId: user.tenantId,
-      },
+      user: publicUser,
     };
   }
 
@@ -98,7 +151,7 @@ export class AuthService {
    * change to the user (password reset, deactivation, logout-everywhere) makes older refresh
    * tokens stop working. `ss` is when the session began, so renewals cannot go on forever.
    */
-  private static signRefreshToken(ctx: AuthContext, userUpdatedAt: Date, sessionStartSeconds: number): string {
+  private static signRefreshToken(ctx: TokenClaims, userUpdatedAt: Date, sessionStartSeconds: number): string {
     return jwt.sign({ tid: ctx.tenantId, uv: userUpdatedAt.getTime(), ss: sessionStartSeconds }, refreshKey(), {
       algorithm: 'HS256',
       issuer: ISSUER,
@@ -140,17 +193,18 @@ export class AuthService {
 
     const user = await prisma.user.findFirst({
       where: { id: claims.sub, tenantId: claims.tid, isActive: true },
+      include: { roleRef: true },
     });
     // The user must still be active and unchanged since this token was issued.
     if (!user || user.updatedAt.getTime() !== claims.uv) {
       throw new AuthError('Please sign in again.');
     }
 
-    const ctx: AuthContext = { userId: user.id, tenantId: user.tenantId, role: user.role };
+    const { ctx, publicUser } = await AuthService.withAccess(user);
     return {
       token: AuthService.signToken(ctx),
       refreshToken: AuthService.signRefreshToken(ctx, user.updatedAt, claims.ss),
-      user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId },
+      user: publicUser,
     };
   }
 
@@ -169,7 +223,7 @@ export class AuthService {
     authCache.invalidateUser(claims.sub);
   }
 
-  public static signToken(ctx: AuthContext): string {
+  public static signToken(ctx: TokenClaims): string {
     return jwt.sign({ tid: ctx.tenantId, role: ctx.role }, config.JWT_SECRET, {
       algorithm: 'HS256',
       issuer: ISSUER,
@@ -200,11 +254,11 @@ export class AuthService {
 
     const user = await prisma.user.findFirst({
       where: { id: claims.sub, tenantId: claims.tid, isActive: true },
-      select: { id: true, tenantId: true, role: true },
+      include: { roleRef: true },
     });
     if (!user) return null;
 
-    const ctx: AuthContext = { userId: user.id, tenantId: user.tenantId, role: user.role };
+    const { ctx } = await AuthService.withAccess(user);
     authCache.set(ctx);
     return ctx;
   }
@@ -225,7 +279,7 @@ export class AuthService {
      * system where the owner has decided to accept that anyone who guesses it gets in.
      */
     allowWeakPassword?: boolean;
-  }): Promise<{ action: 'created' | 'password-reset'; user: PublicUser }> {
+  }): Promise<{ action: 'created' | 'password-reset'; user: Omit<PublicUser, 'roleName' | 'permissions'> }> {
     const minimum = input.allowWeakPassword ? 4 : 12;
     if (input.password.length < minimum) {
       throw new AuthError(`The password must be at least ${minimum} characters.`);
@@ -273,9 +327,10 @@ export class AuthService {
   }
 
   public static async getPublicUser(ctx: AuthContext): Promise<PublicUser | null> {
-    return prisma.user.findFirst({
+    const user = await prisma.user.findFirst({
       where: { id: ctx.userId, tenantId: ctx.tenantId, isActive: true },
-      select: { id: true, email: true, name: true, role: true, tenantId: true },
+      include: { roleRef: true },
     });
+    return user ? (await AuthService.withAccess(user)).publicUser : null;
   }
 }

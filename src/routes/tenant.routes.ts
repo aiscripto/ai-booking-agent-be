@@ -1,19 +1,19 @@
 import { Router } from 'express';
 import { TenantController } from '../controllers/tenant.controller';
-import { requireAuth, requireRole, STAFF_ROLES } from '../middlewares/auth.middleware';
+import { requireAuth, requirePermission } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // Every tenant route needs a signed-in user. The tenant comes from the verified token.
 router.use(requireAuth);
 
-// Reading: any staff member
-router.get('/vocabulary', requireRole(...STAFF_ROLES), TenantController.getVocabulary);
-router.get('/branding', requireRole(...STAFF_ROLES), TenantController.getBranding);
+// Reading: anyone allowed on the dashboard
+router.get('/vocabulary', requirePermission('dashboard.view'), TenantController.getVocabulary);
+router.get('/branding', requirePermission('dashboard.view'), TenantController.getBranding);
 
-// Changing the tenant: admins only
-router.put('/branding', requireRole('ADMIN'), TenantController.updateBranding);
-router.post('/resources', requireRole('ADMIN'), TenantController.onboardResource);
-router.delete('/resources/:id', requireRole('ADMIN'), TenantController.offboardResource);
+// Changing the tenant: only roles that are allowed to
+router.put('/branding', requirePermission('settings.business'), TenantController.updateBranding);
+router.post('/resources', requirePermission('providers.manage'), TenantController.onboardResource);
+router.delete('/resources/:id', requirePermission('providers.manage'), TenantController.offboardResource);
 
 export const tenantRouter = router;

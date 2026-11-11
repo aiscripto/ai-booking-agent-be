@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthContext, AuthService, StaffRole } from '../services/auth.service';
+import { Permission } from '../config/permissions';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -35,6 +36,33 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 export function requireRole(...roles: StaffRole[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.auth || !roles.includes(req.auth.role)) {
+      res.status(403).json({ status: 'error', message: 'You do not have permission to do this.' });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Requires EVERY listed permission. The permissions come from the user's role, read from the
+ * database (not from the token), so a change to a role applies within the auth cache time.
+ */
+export function requirePermission(...permissions: Permission[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const granted = req.auth?.permissions ?? [];
+    if (!req.auth || !permissions.every((p) => granted.includes(p))) {
+      res.status(403).json({ status: 'error', message: 'You do not have permission to do this.' });
+      return;
+    }
+    next();
+  };
+}
+
+/** Requires AT LEAST ONE of the listed permissions (for lists that two screens need). */
+export function requireAnyPermission(...permissions: Permission[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const granted = req.auth?.permissions ?? [];
+    if (!req.auth || !permissions.some((p) => granted.includes(p))) {
       res.status(403).json({ status: 'error', message: 'You do not have permission to do this.' });
       return;
     }

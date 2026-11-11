@@ -3,7 +3,7 @@ import { AuthContext, AuthService, authCache } from '../src/services/auth.servic
 import { prisma } from '../src/services/db.service';
 import { createStaff, removeStaff, TestStaff } from './helpers/auth';
 
-const ctx = (userId: string, tenantId = 't1', role: AuthContext['role'] = 'ADMIN'): AuthContext => ({ userId, tenantId, role });
+const ctx = (userId: string, tenantId = 't1', role: AuthContext['role'] = 'ADMIN'): AuthContext => ({ userId, tenantId, role, permissions: [] });
 
 describe('AuthCache (short memory of active users)', () => {
   it('returns a stored user until the time is up, then forgets', () => {

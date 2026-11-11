@@ -36,17 +36,31 @@ enum BookingStatus {
 }
 
 model Tenant {
-  id           String       @id @default(uuid()) @db.Uuid
-  name         String
-  industry     IndustryType @default(GENERAL)
-  branding     Json?        @map("branding")
-  calApiKey    String?      @map("cal_api_key")
-  calTeamId    Int?         @map("cal_team_id")
-  isActive     Boolean      @default(true) @map("is_active")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  industry    IndustryType @default(GENERAL)
+  branding    Json?        @map("branding")
+  calApiKey   String?      @map("cal_api_key")
+  calTeamId   Int?         @map("cal_team_id")
+  isActive    Boolean      @default(true) @map("is_active")
+  // Business details (Setup > Business)
+  phone       String?
+  email       String?
+  address     String?
+  city        String?
+  state       String?
+  zip         String?
+  latitude    Float?
+  longitude   Float?
+  // Last employee number handed out; the next employee gets this + 1 (assigned by the system)
+  employeeSeq Int          @default(0) @map("employee_seq")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
 
   users            User[]
+  grades           Grade[]
+  employees        Employee[]
+  roles            Role[]
   voiceAgents      VoiceAgent[]
   appointments     Appointment[] // Legacy appointment model for backward compatibility
   callLogs         CallLog[]
@@ -69,29 +83,39 @@ model User {
   name         String?
   role         UserRole  @default(ADMIN)
   isActive     Boolean   @default(true) @map("is_active")
-  tenantId     String    @db.Uuid @map("tenant_id")
+  tenantId     String    @map("tenant_id") @db.Uuid
   tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  resourceId   String?   @unique @db.Uuid @map("resource_id")
+  resourceId   String?   @unique @map("resource_id") @db.Uuid
   resource     Resource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  // The role that decides what this user may do. If empty, the built-in role named by `role` applies.
+  roleId       String?   @map("role_id") @db.Uuid
+  roleRef      Role?     @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  // Optional link to the person (employee record) this login belongs to.
+  employeeId   String?   @unique @map("employee_id") @db.Uuid
+  employee     Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
   @@index([tenantId])
+  @@index([roleId])
   @@map("users")
 }
 
 model Department {
   id                String     @id @default(uuid()) @db.Uuid
-  tenantId          String     @db.Uuid @map("tenant_id")
+  tenantId          String     @map("tenant_id") @db.Uuid
   tenant            Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name              String
   code              String?
   description       String?
   buildingLocation  String?    @map("building_location")
+  contact           String?
+  email             String?
   isHipaaRestricted Boolean    @default(true) @map("is_hipaa_restricted")
   maxDailyBookings  Int        @default(25) @map("max_daily_bookings")
   isActive          Boolean    @default(true) @map("is_active")
   resources         Resource[]
+  employees         Employee[]
   createdAt         DateTime   @default(now()) @map("created_at")
   updatedAt         DateTime   @updatedAt @map("updated_at")
 
@@ -102,13 +126,13 @@ model Department {
 
 model Resource {
   id            String      @id @default(uuid()) @db.Uuid
-  tenantId      String      @db.Uuid @map("tenant_id")
+  tenantId      String      @map("tenant_id") @db.Uuid
   tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  departmentId  String?     @db.Uuid @map("department_id")
+  departmentId  String?     @map("department_id") @db.Uuid
   department    Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   name          String
   email         String
-  title         String?     // e.g. "Doctor of Medicine", "Master Stylist", "Senior Partner"
+  title         String? // e.g. "Doctor of Medicine", "Master Stylist", "Senior Partner"
   avatarUrl     String?     @map("avatar_url")
   calUserId     Int?        @unique @map("cal_user_id")
   calScheduleId Int?        @map("cal_schedule_id")
@@ -126,9 +150,9 @@ model Resource {
 
 model ServiceType {
   id              String   @id @default(uuid()) @db.Uuid
-  tenantId        String   @db.Uuid @map("tenant_id")
+  tenantId        String   @map("tenant_id") @db.Uuid
   tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  name            String   // e.g. "Consultation", "Haircut", "Strategy Call"
+  name            String // e.g. "Consultation", "Haircut", "Strategy Call"
   description     String?
   durationMinutes Int      @default(30) @map("duration_minutes")
   price           Decimal? @db.Decimal(10, 2)
@@ -147,7 +171,7 @@ model ServiceType {
 
 model Customer {
   id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @db.Uuid @map("tenant_id")
+  tenantId  String   @map("tenant_id") @db.Uuid
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name      String
   phone     String
@@ -165,22 +189,22 @@ model Customer {
 }
 
 model Booking {
-  id              String        @id @default(uuid()) @db.Uuid
-  tenantId        String        @db.Uuid @map("tenant_id")
-  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  resourceId      String        @db.Uuid @map("resource_id")
-  resource        Resource      @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resourceId String   @map("resource_id") @db.Uuid
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
 
-  serviceTypeId   String        @db.Uuid @map("service_type_id")
-  serviceType     ServiceType   @relation(fields: [serviceTypeId], references: [id], onDelete: Cascade)
+  serviceTypeId String      @map("service_type_id") @db.Uuid
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id], onDelete: Cascade)
 
-  customerId      String        @db.Uuid @map("customer_id")
-  customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId String   @map("customer_id") @db.Uuid
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   // Cal.com Mapping References
-  calBookingId    Int?          @unique @map("cal_booking_id")
-  calUid          String?       @unique @map("cal_uid")
+  calBookingId Int?    @unique @map("cal_booking_id")
+  calUid       String? @unique @map("cal_uid")
 
   bookingDateTime DateTime      @map("booking_date_time")
   durationMinutes Int           @default(30) @map("duration_minutes")
@@ -189,14 +213,14 @@ model Booking {
   isActive        Boolean       @default(true) @map("is_active")
 
   // Dynamic Intake & Notes
-  intakeData      Json?         @map("intake_data")
-  providerNotes   String?       @db.Text @map("provider_notes")
+  intakeData    Json?   @map("intake_data")
+  providerNotes String? @map("provider_notes") @db.Text
 
-  callLogId       String?       @db.Uuid @map("call_log_id")
-  callLog         CallLog?      @relation(fields: [callLogId], references: [id], onDelete: SetNull)
+  callLogId String?  @map("call_log_id") @db.Uuid
+  callLog   CallLog? @relation(fields: [callLogId], references: [id], onDelete: SetNull)
 
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   // Mathematical Anti-Double-Booking Constraint
   @@unique([tenantId, resourceId, bookingDateTime])
@@ -213,7 +237,7 @@ model VoiceAgent {
   voiceProvider String   @map("voice_provider") // vapi, retell
   voiceAgentId  String?  @map("voice_agent_id")
   calendarId    String   @map("calendar_id")
-  tenantId      String   @db.Uuid @map("tenant_id")
+  tenantId      String   @map("tenant_id") @db.Uuid
   tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at")
@@ -227,7 +251,7 @@ model VoiceAgent {
 
 model Appointment {
   id                  String   @id @default(uuid()) @db.Uuid
-  tenantId            String   @db.Uuid @map("tenant_id")
+  tenantId            String   @map("tenant_id") @db.Uuid
   tenant              Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   calendarId          String   @map("calendar_id")
   appointmentDateTime DateTime @map("appointment_date_time")
@@ -242,16 +266,16 @@ model Appointment {
   // The opaque id in the stable link sent to the customer
   // (https://<host>/j/<token>). Issued once at booking time and never rotated,
   // so an SMS already delivered stays valid across reschedules.
-  joinToken           String?  @unique @map("join_token")
+  joinToken        String?   @unique @map("join_token")
   // The provisioned room. Minted lazily on first visit rather than at booking
   // time: provider rooms expire, so a booking three weeks out would otherwise
   // ship a link that is already dead on arrival.
-  meetingUrl          String?  @map("meeting_url")
-  meetingProvider     String?  @map("meeting_provider")
-  meetingExpiresAt    DateTime? @map("meeting_expires_at")
+  meetingUrl       String?   @map("meeting_url")
+  meetingProvider  String?   @map("meeting_provider")
+  meetingExpiresAt DateTime? @map("meeting_expires_at")
 
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@unique([tenantId, calendarId, appointmentDateTime])
   @@index([tenantId])
@@ -262,9 +286,9 @@ model Appointment {
 
 model CallLog {
   id            String      @id @default(uuid()) @db.Uuid
-  tenantId      String      @db.Uuid @map("tenant_id")
+  tenantId      String      @map("tenant_id") @db.Uuid
   tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  voiceAgentId  String?     @db.Uuid @map("voice_agent_id")
+  voiceAgentId  String?     @map("voice_agent_id") @db.Uuid
   voiceAgent    VoiceAgent? @relation(fields: [voiceAgentId], references: [id], onDelete: Cascade)
   callSid       String?     @map("call_sid")
   duration      Int?
@@ -288,7 +312,7 @@ model CallLog {
 
 model GoogleCredential {
   id           String   @id @default(uuid()) @db.Uuid
-  tenantId     String   @unique @db.Uuid @map("tenant_id")
+  tenantId     String   @unique @map("tenant_id") @db.Uuid
   tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   accessToken  String   @map("access_token")
   refreshToken String   @map("refresh_token")
@@ -298,4 +322,74 @@ model GoogleCredential {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@map("google_credentials")
+}
+
+/// A career grade, for example "G15". The code is chosen by the user; the id is internal.
+model Grade {
+  id        String     @id @default(uuid()) @db.Uuid
+  tenantId  String     @map("tenant_id") @db.Uuid
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  code      String
+  name      String?
+  isActive  Boolean    @default(true) @map("is_active")
+  employees Employee[]
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("grades")
+}
+
+/// A person who works for the business. Different from a login (User) and from a bookable
+/// provider (Resource). `code` is assigned by the system (EMP-0001, EMP-0002, ...).
+model Employee {
+  id           String      @id @default(uuid()) @db.Uuid
+  tenantId     String      @map("tenant_id") @db.Uuid
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  code         String
+  fullName     String      @map("full_name")
+  email        String?
+  phone        String?
+  departmentId String?     @map("department_id") @db.Uuid
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  gradeId      String?     @map("grade_id") @db.Uuid
+  grade        Grade?      @relation(fields: [gradeId], references: [id], onDelete: SetNull)
+  roleId       String?     @map("role_id") @db.Uuid
+  role         Role?       @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  managerId    String?     @map("manager_id") @db.Uuid
+  manager      Employee?   @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports      Employee[]  @relation("EmployeeManager")
+  isActive     Boolean     @default(true) @map("is_active")
+  user         User?
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([departmentId])
+  @@index([managerId])
+  @@map("employees")
+}
+
+/// What a user may do. `permissions` holds codes from the fixed list in src/config/permissions.ts.
+/// The four built-in roles (isSystem) cannot be deleted; ADMIN always has every permission.
+model Role {
+  id          String     @id @default(uuid()) @db.Uuid
+  tenantId    String     @map("tenant_id") @db.Uuid
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  code        String
+  name        String
+  description String?
+  permissions String[]
+  isActive    Boolean    @default(true) @map("is_active")
+  isSystem    Boolean    @default(false) @map("is_system")
+  users       User[]
+  employees   Employee[]
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("roles")
 }

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { AuthController } from '../controllers/auth.controller';
-import { requireAuth, requireRole, STAFF_ROLES } from '../middlewares/auth.middleware';
+import { requireAuth, requirePermission } from '../middlewares/auth.middleware';
 import { loginLimitPerAccount, loginLimitPerAddress, refreshLimitPerAddress } from '../middlewares/login-rate-limit';
 
 const router = Router();
@@ -17,11 +17,11 @@ router.post('/logout', refreshLimitPerAddress, AuthController.logout);
 // Who am I (checks that the stored token still works)
 router.get('/me', requireAuth, AuthController.me);
 
-// Which Google account the calendar uses for the signed-in user's tenant (any staff member)
-router.get('/google/status', requireAuth, requireRole(...STAFF_ROLES), AuthController.googleStatus);
+// Which Google account the calendar uses for the signed-in user's tenant (anyone allowed on the dashboard)
+router.get('/google/status', requireAuth, requirePermission('dashboard.view'), AuthController.googleStatus);
 
-// Endpoint to generate Google OAuth Consent screen URL (admins only, own tenant)
-router.get('/google', requireAuth, requireRole('ADMIN'), AuthController.getAuthUrl);
+// Endpoint to generate Google OAuth Consent screen URL (needs the business-settings permission, own tenant)
+router.get('/google', requireAuth, requirePermission('settings.business'), AuthController.getAuthUrl);
 
 // Google OAuth redirect callback endpoint. Public on purpose: Google redirects the browser here.
 // It is protected by the signed, expiring, single-use `state` value.

@@ -1,3 +1,4 @@
+import fs from 'fs';
 import express from 'express';
 import request from 'supertest';
 
@@ -11,8 +12,8 @@ function appFor(setting: string) {
 }
 
 describe('trust proxy setting (SEC-013)', () => {
-  it('app.ts uses the private-address setting', async () => {
-    const src = await import('fs').then((fs) => fs.readFileSync('src/app.ts', 'utf8'));
+  it('app.ts uses the private-address setting', () => {
+    const src = fs.readFileSync('src/app.ts', 'utf8');
     expect(src).toContain("app.set('trust proxy', 'loopback, linklocal, uniquelocal')");
   });
 
