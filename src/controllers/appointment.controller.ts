@@ -1,5 +1,6 @@
 import { BookingTimeError, parseBookingTime } from '../services/booking-time';
 import { BookingService } from '../services/booking.service';
+import { isOwnOnly } from '../middlewares/audit.middleware';
 import { ConsultantError } from '../services/consultants/consultant.service';
 import { TenantScheduleService } from '../services/tenant-schedule.service';
 import { Request, Response, NextFunction } from 'express';
@@ -11,6 +12,11 @@ import { config } from '../config';
 import { dayBoundsUtc, isRealDate } from '../services/availability.service';
 
 
+/** A moment as it should read in the audit log: in the business's own time zone. */
+function parsedWhen(moment: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(moment);
+}
+
 export class AppointmentController {
   /**
    * The caller's tenant, taken from the verified login token (set by requireAuth).
@@ -21,6 +27,16 @@ export class AppointmentController {
       throw new Error('Unauthorized: authentication required.');
     }
     return req.auth.tenantId;
+  }
+
+  /**
+   * A login limited to "their own appointments" (a consultant) may only touch the appointments of the
+   * employee it is linked to. Returns that limit, or null when the login has no limit.
+   * `linked` is false when the login is limited but not linked to an employee: it then sees and changes nothing.
+   */
+  private static ownLimit(req: Request): { employeeId: string | null } | null {
+    if (!req.auth || !isOwnOnly(req.auth.permissions)) return null;
+    return { employeeId: req.auth.employeeId };
   }
 
 
@@ -47,6 +63,16 @@ export class AppointmentController {
         // appointment belongs to the day it is on for the people who book it.
         const { start, end } = dayBoundsUtc(dateStr, (await TenantScheduleService.get(tenantId)).timeZone);
         whereCondition.appointmentDateTime = { gte: start, lt: end };
+      }
+
+      // A consultant login sees only its own appointments (and none if it is not linked to an employee).
+      const limit = AppointmentController.ownLimit(req);
+      if (limit) {
+        if (!limit.employeeId) {
+          res.status(200).json({ status: 'success', data: [] });
+          return;
+        }
+        whereCondition.employeeId = limit.employeeId;
       }
 
       const appointments = await prisma.appointment.findMany({
@@ -95,6 +121,12 @@ export class AppointmentController {
       try {
         const schedule = await TenantScheduleService.get(tenantId);
         const when = parseBookingTime(dateTimeRaw, schedule.timeZone);
+        // A consultant login can only book for itself, whatever the request says.
+        const limit = AppointmentController.ownLimit(req);
+        if (limit && !limit.employeeId) {
+          res.status(403).json({ status: 'error', message: 'Your login is not linked to a consultant, so it cannot book appointments.' });
+          return;
+        }
         const booked = await BookingService.book(
           tenantId,
           {
@@ -103,12 +135,18 @@ export class AppointmentController {
             customerName,
             customerPhone,
             customerEmail: customerEmail || null,
-            consultant: typeof req.body.employeeId === 'string' ? req.body.employeeId : null,
+            consultant: limit ? limit.employeeId : typeof req.body.employeeId === 'string' ? req.body.employeeId : null,
             category: typeof req.body.categoryId === 'string' ? req.body.categoryId : null,
           },
           schedule
         );
         appointment = { ...booked.appointment, consultant: booked.consultant };
+        res.locals.audit = {
+          summary: `Booked ${customerName} on ${parsedWhen(when, schedule.timeZone)}${booked.consultant ? ` with ${booked.consultant.fullName}` : ''}`,
+          entityType: 'appointment',
+          entityId: booked.appointment.id,
+          details: { customerName, appointmentDateTime: when.toISOString(), consultantId: booked.consultant?.id ?? null },
+        };
       } catch (error) {
         if (error instanceof BookingTimeError || error instanceof ConsultantError) {
           res.status(400).json({ status: 'error', message: error.message });
@@ -149,7 +187,19 @@ export class AppointmentController {
         return;
       }
 
-      await AppointmentService.cancelAppointment(tenantId, id);
+      const limit = AppointmentController.ownLimit(req);
+      if (limit && !limit.employeeId) {
+        res.status(403).json({ status: 'error', message: 'Your login is not linked to a consultant, so it cannot cancel appointments.' });
+        return;
+      }
+      const cancelled = await AppointmentService.cancelAppointment(tenantId, id, limit?.employeeId ?? undefined);
+      const zone = (await TenantScheduleService.get(tenantId)).timeZone;
+      res.locals.audit = {
+        summary: `Cancelled the appointment of ${cancelled.customerName} on ${parsedWhen(cancelled.appointmentDateTime, zone)}`,
+        entityType: 'appointment',
+        entityId: id,
+        details: { customerName: cancelled.customerName, appointmentDateTime: cancelled.appointmentDateTime.toISOString(), consultantId: cancelled.employeeId },
+      };
 
       res.status(200).json({
         status: 'success',
@@ -233,6 +283,14 @@ export class AppointmentController {
         return;
       }
 
+      // A transcript holds personal data: opening one is always logged, for every user.
+      res.locals.audit = {
+        summary: 'Opened a call transcript',
+        entityType: 'call',
+        entityId: log.id,
+        alwaysLog: true,
+        details: { caller: log.customerName ?? null },
+      };
       res.status(200).json({ status: 'success', data: log });
     } catch (error: unknown) {
       res.status(400).json({

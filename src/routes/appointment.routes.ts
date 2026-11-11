@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { AppointmentController } from '../controllers/appointment.controller';
+import { auditRequests } from '../middlewares/audit.middleware';
 import { requireAuth, requirePermission } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // Every appointment and call-log route needs a signed-in staff member.
 // The tenant comes from the verified token, never from a header or query.
-router.use(requireAuth, requirePermission('dashboard.view'));
+router.use(requireAuth, requirePermission('dashboard.view'), auditRequests);
 
 // Retrieve appointments
 router.get('/', requirePermission('appointments.view'), AppointmentController.listAppointments);

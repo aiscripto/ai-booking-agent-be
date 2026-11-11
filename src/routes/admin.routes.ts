@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { AdminController as C } from '../controllers/admin.controller';
+import { auditRequests } from '../middlewares/audit.middleware';
 import { requireAnyPermission, requireAuth, requirePermission } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // The setup panel. Every route needs a signed-in user; the tenant comes from the verified token.
-router.use(requireAuth);
+router.use(requireAuth, auditRequests);
 
 // Business details
 router.get('/business', requirePermission('settings.business'), C.getBusiness);
@@ -48,5 +49,8 @@ router.delete('/roles/:id', people, C.deleteRole);
 router.get('/users', people, C.listUsers);
 router.post('/users', people, C.createUser);
 router.put('/users/:id', people, C.updateUser);
+
+// The audit log: read only. Nothing here can change or delete an entry.
+router.get('/audit', requirePermission('audit.view'), C.listAudit);
 
 export const adminRouter = router;

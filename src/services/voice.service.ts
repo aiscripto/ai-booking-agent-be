@@ -1,6 +1,7 @@
 import { BookingTimeError, assertBookableSlot, parseBookingTime } from './booking-time';
 import { TenantScheduleService } from './tenant-schedule.service';
 import { BookingService } from './booking.service';
+import { AuditService } from './audit.service';
 import { ConsultantError, ConsultantService, consultantKey } from './consultants/consultant.service';
 import { AppointmentService } from './appointment.service';
 import { prisma } from './db.service';
@@ -230,6 +231,17 @@ export class VoiceService {
           }
 
           const withWhom = booked.consultant ? ` with ${booked.consultant.fullName}` : '';
+          await AuditService.record(
+            tenantId,
+            { userId: null, name: 'Voice agent', role: 'system' },
+            {
+              action: 'voice.bookAppointment',
+              entityType: 'appointment',
+              entityId: booked.appointment.id,
+              summary: `Voice agent booked ${customerName} on ${AppointmentService.formatForCustomer(parsedDate, true, schedule.timeZone)}${withWhom}`,
+              details: { customerName, appointmentDateTime: parsedDate.toISOString(), consultantId: booked.consultant?.id ?? null },
+            },
+          );
           return {
             success: true,
             appointmentId: booked.appointment.id,

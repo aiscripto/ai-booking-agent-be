@@ -4,7 +4,8 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { prisma } from './db.service';
 import { AuthCache } from './auth-cache';
-import { ALL_PERMISSIONS, BUILT_IN_ROLES, isPermission, Permission } from '../config/permissions';
+import { AuditService } from './audit.service';
+import { ADMIN_PERMISSIONS, BUILT_IN_ROLES, isPermission, Permission } from '../config/permissions';
 
 export type StaffRole = 'ADMIN' | 'PROVIDER' | 'FRONT_DESK' | 'PATIENT';
 
@@ -15,6 +16,11 @@ export interface AuthContext {
   role: StaffRole;
   /** What the user may do now, from their role. Checked by requirePermission. */
   permissions: Permission[];
+  /** The employee (consultant) this login belongs to. Empty if the login is not linked to one. */
+  employeeId: string | null;
+  /** The user name and role name, for the audit log. */
+  username: string;
+  roleName: string;
 }
 
 /** The part of the context that goes into the token. Permissions are never trusted from a token. */
@@ -30,6 +36,8 @@ export interface PublicUser {
   roleName: string;
   /** What the user may do. The frontend uses this to hide screens; the server checks it again. */
   permissions: Permission[];
+  /** The employee (consultant) this login is linked to, if any. */
+  employeeId: string | null;
 }
 
 const ISSUER = 'booking-agent';
@@ -78,7 +86,7 @@ type RoleRow = { code: string; permissions: string[]; isActive: boolean } | null
  * everything, so an admin cannot be locked out by editing roles.
  */
 export function resolvePermissions(builtIn: StaffRole, row: RoleRow): Permission[] {
-  if (builtIn === 'ADMIN' && (!row || row.code === 'ADMIN')) return [...ALL_PERMISSIONS];
+  if (builtIn === 'ADMIN' && (!row || row.code === 'ADMIN')) return [...ADMIN_PERMISSIONS];
   if (!row) return [...BUILT_IN_ROLES[builtIn].permissions];
   if (!row.isActive) return [];
   return row.permissions.filter(isPermission);
@@ -90,6 +98,7 @@ type UserForAccess = {
   name: string | null;
   role: StaffRole;
   tenantId: string;
+  employeeId?: string | null;
   roleRef?: { code: string; name: string; permissions: string[]; isActive: boolean } | null;
 };
 
@@ -104,16 +113,19 @@ export class AuthService {
       });
     }
     const permissions = resolvePermissions(user.role, row);
+    const roleName = row?.name ?? BUILT_IN_ROLES[user.role].name;
+    const employeeId = user.employeeId ?? null;
     return {
-      ctx: { userId: user.id, tenantId: user.tenantId, role: user.role, permissions },
+      ctx: { userId: user.id, tenantId: user.tenantId, role: user.role, permissions, employeeId, username: user.email, roleName },
       publicUser: {
         id: user.id,
         email: user.email,
         name: user.name,
         role: user.role,
         tenantId: user.tenantId,
-        roleName: row?.name ?? BUILT_IN_ROLES[user.role].name,
+        roleName,
         permissions,
+        employeeId,
       },
     };
   }
@@ -126,7 +138,7 @@ export class AuthService {
    * Checks an email and password. Returns the user and a signed token.
    * Throws AuthError with one fixed message for every failure.
    */
-  public static async login(email: string, password: string): Promise<AuthResult> {
+  public static async login(email: string, password: string, ip?: string): Promise<AuthResult> {
     const user = await prisma.user.findFirst({
       where: { email: { equals: email, mode: 'insensitive' }, isActive: true },
       include: { roleRef: true },
@@ -134,10 +146,25 @@ export class AuthService {
 
     const matches = await bcrypt.compare(password, user ? user.passwordHash : await getDummyHash());
     if (!user || !matches) {
+      // A wrong password for a real user is recorded (the user is known). An unknown name has no business to record it in.
+      if (user) {
+        await AuditService.record(
+          user.tenantId,
+          { userId: user.id, name: user.email, role: user.roleRef?.name ?? user.role },
+          { action: 'auth.login_failed', entityType: 'user', entityId: user.id, summary: 'Sign-in failed: wrong password' },
+          ip,
+        );
+      }
       throw new AuthError('Invalid email or password.');
     }
 
     const { ctx, publicUser } = await AuthService.withAccess(user);
+    await AuditService.record(
+      user.tenantId,
+      { userId: user.id, name: user.email, role: publicUser.roleName },
+      { action: 'auth.login', entityType: 'user', entityId: user.id, summary: 'Signed in' },
+      ip,
+    );
     return {
       token: AuthService.signToken(ctx),
       refreshToken: AuthService.signRefreshToken(ctx, user.updatedAt, Math.floor(Date.now() / 1000)),
@@ -213,14 +240,23 @@ export class AuthService {
    * refresh token issued before now stops working. Access tokens already issued still work until
    * they expire (15 minutes by default). A token that is not valid does nothing.
    */
-  public static async revokeSessions(refreshToken: string): Promise<void> {
+  public static async revokeSessions(refreshToken: string, ip?: string): Promise<void> {
     const claims = AuthService.readRefreshToken(refreshToken);
     if (!claims) return;
+    const user = await prisma.user.findFirst({ where: { id: claims.sub, tenantId: claims.tid }, select: { email: true, role: true } });
     await prisma.user.updateMany({
       where: { id: claims.sub, tenantId: claims.tid },
       data: { updatedAt: new Date() },
     });
     authCache.invalidateUser(claims.sub);
+    if (user) {
+      await AuditService.record(
+        claims.tid,
+        { userId: claims.sub, name: user.email, role: user.role },
+        { action: 'auth.logout', entityType: 'user', entityId: claims.sub, summary: 'Signed out (all sessions ended)' },
+        ip,
+      );
+    }
   }
 
   public static signToken(ctx: TokenClaims): string {
@@ -279,7 +315,7 @@ export class AuthService {
      * system where the owner has decided to accept that anyone who guesses it gets in.
      */
     allowWeakPassword?: boolean;
-  }): Promise<{ action: 'created' | 'password-reset'; user: Omit<PublicUser, 'roleName' | 'permissions'> }> {
+  }): Promise<{ action: 'created' | 'password-reset'; user: Omit<PublicUser, 'roleName' | 'permissions' | 'employeeId'> }> {
     const minimum = input.allowWeakPassword ? 4 : 12;
     if (input.password.length < minimum) {
       throw new AuthError(`The password must be at least ${minimum} characters.`);

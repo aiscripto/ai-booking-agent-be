@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { PERMISSIONS } from '../config/permissions';
 import {
+  auditQuerySchema,
   businessSchema,
   categorySchema,
   timeOffSchema,
@@ -13,6 +14,7 @@ import {
   roleSchema,
   updateUserSchema,
 } from '../schemas/admin.schema';
+import { AuditService } from '../services/audit.service';
 import { BusinessService } from '../services/admin/business.service';
 import { GradeService } from '../services/admin/grade.service';
 import { CategoryService } from '../services/admin/category.service';
@@ -101,6 +103,8 @@ export class AdminController {
     await EmployeeService.removeTimeOff(tenantId, idOf(req));
     ok(res, { deleted: true });
   });
+
+  public static listAudit = admin(async (req, res, tenantId) => ok(res, await AuditService.list(tenantId, auditQuerySchema.parse(req.query))));
 
   public static listRoles = admin(async (_req, res, tenantId) => ok(res, await RoleService.list(tenantId)));
   public static createRole = admin(async (req, res, tenantId) =>

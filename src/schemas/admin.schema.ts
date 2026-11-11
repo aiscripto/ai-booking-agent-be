@@ -153,3 +153,12 @@ export const timeOffSchema = z
   .object({ startDate: calendarDate, endDate: calendarDate, note: text(200) })
   .refine((v) => v.endDate >= v.startDate, { message: 'The last day cannot be before the first day.', path: ['endDate'] });
 export type TimeOffInput = z.infer<typeof timeOffSchema>;
+
+export const auditQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  userId: z.string().uuid().optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().uuid().optional(),
+});

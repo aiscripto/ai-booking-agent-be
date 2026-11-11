@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { TenantController } from '../controllers/tenant.controller';
+import { auditRequests } from '../middlewares/audit.middleware';
 import { requireAuth, requirePermission } from '../middlewares/auth.middleware';
 
 const router = Router();
 
 // Every tenant route needs a signed-in user. The tenant comes from the verified token.
-router.use(requireAuth);
+router.use(requireAuth, auditRequests);
 
 // Reading: anyone allowed on the dashboard
 router.get('/vocabulary', requirePermission('dashboard.view'), TenantController.getVocabulary);

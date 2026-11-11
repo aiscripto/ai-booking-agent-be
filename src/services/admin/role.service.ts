@@ -1,27 +1,45 @@
 import { prisma } from '../db.service';
 import { authCache } from '../auth.service';
-import { ALL_PERMISSIONS, BUILT_IN_ROLES, BuiltInRole } from '../../config/permissions';
+import { ADMIN_PERMISSIONS, BUILT_IN_ROLES, BuiltInRole, EXTRA_SYSTEM_ROLES, ExtraSystemRole } from '../../config/permissions';
 import { AdminError, isDuplicate } from './admin-error';
 import type { RoleInput } from '../../schemas/admin.schema';
 
 const BUILT_IN_CODES = Object.keys(BUILT_IN_ROLES) as BuiltInRole[];
 
+const EXTRA_CODES = Object.keys(EXTRA_SYSTEM_ROLES) as ExtraSystemRole[];
+
+/** One of the four roles that is also stored on the user row (ADMIN, FRONT_DESK, PROVIDER, PATIENT). */
 export function isBuiltInCode(code: string): code is BuiltInRole {
   return (BUILT_IN_CODES as string[]).includes(code);
+}
+
+/** Any built-in role, including the extra ones such as CONSULTANT. Their codes are reserved. */
+export function isReservedCode(code: string): boolean {
+  return isBuiltInCode(code) || (EXTRA_CODES as string[]).includes(code);
 }
 
 export class RoleService {
   /** Makes sure the four built-in roles exist as rows for this tenant, so they can be shown and edited. */
   public static async ensureBuiltIn(tenantId: string): Promise<void> {
     await prisma.role.createMany({
-      data: BUILT_IN_CODES.map((code) => ({
-        tenantId,
-        code,
-        name: BUILT_IN_ROLES[code].name,
-        description: BUILT_IN_ROLES[code].description,
-        permissions: BUILT_IN_ROLES[code].permissions,
-        isSystem: true,
-      })),
+      data: [
+        ...BUILT_IN_CODES.map((code) => ({
+          tenantId,
+          code,
+          name: BUILT_IN_ROLES[code].name,
+          description: BUILT_IN_ROLES[code].description,
+          permissions: BUILT_IN_ROLES[code].permissions,
+          isSystem: true,
+        })),
+        ...EXTRA_CODES.map((code) => ({
+          tenantId,
+          code,
+          name: EXTRA_SYSTEM_ROLES[code].name,
+          description: EXTRA_SYSTEM_ROLES[code].description,
+          permissions: [...EXTRA_SYSTEM_ROLES[code].permissions],
+          isSystem: true,
+        })),
+      ],
       skipDuplicates: true,
     });
   }
@@ -34,13 +52,14 @@ export class RoleService {
       include: { _count: { select: { users: true, employees: true } } },
     });
     // Built-in roles first, in a fixed order, then custom roles by name.
-    const order = (code: string, system: boolean) => (system ? BUILT_IN_CODES.indexOf(code as BuiltInRole) : 100);
+    const ORDER: string[] = [...BUILT_IN_CODES, ...EXTRA_CODES];
+    const order = (code: string, system: boolean) => (system && ORDER.includes(code) ? ORDER.indexOf(code) : 100);
     rows.sort((a, b) => order(a.code, a.isSystem) - order(b.code, b.isSystem) || a.name.localeCompare(b.name));
     return rows.map(({ _count, ...r }) => ({ ...r, userCount: _count.users, employeeCount: _count.employees }));
   }
 
   public static async create(tenantId: string, input: RoleInput) {
-    if (isBuiltInCode(input.code)) throw new AdminError('That code is reserved for a built-in role.', 409);
+    if (isReservedCode(input.code)) throw new AdminError('That code is reserved for a built-in role.', 409);
     try {
       return await prisma.role.create({ data: { ...input, tenantId, isSystem: false } });
     } catch (error) {
@@ -55,7 +74,7 @@ export class RoleService {
     if (!role) throw new AdminError('Role not found.', 404);
 
     if (role.isSystem && input.code !== role.code) throw new AdminError('The code of a built-in role cannot change.', 400);
-    if (!role.isSystem && isBuiltInCode(input.code)) throw new AdminError('That code is reserved for a built-in role.', 409);
+    if (!role.isSystem && isReservedCode(input.code)) throw new AdminError('That code is reserved for a built-in role.', 409);
 
     const locked = role.isSystem && role.code === 'ADMIN';
     if (locked && !input.isActive) throw new AdminError('The Admin role cannot be turned off.', 400);
@@ -73,7 +92,7 @@ export class RoleService {
           name: input.name,
           description: input.description,
           isActive: input.isActive,
-          permissions: locked ? ALL_PERMISSIONS : input.permissions,
+          permissions: locked ? ADMIN_PERMISSIONS : input.permissions,
         },
       });
     } catch (error) {

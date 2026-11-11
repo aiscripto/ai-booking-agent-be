@@ -76,7 +76,7 @@ export class AuthController {
         return;
       }
 
-      const { token, refreshToken, user } = await AuthService.login(parsed.data.email, parsed.data.password);
+      const { token, refreshToken, user } = await AuthService.login(parsed.data.email, parsed.data.password, req.ip);
       setRefreshCookie(req, res, refreshToken);
       res.status(200).json({ status: 'success', data: { token, user } });
     } catch (error) {
@@ -131,7 +131,7 @@ export class AuthController {
 
       const cookie = readCookie(req, REFRESH_COOKIE);
       if (cookie) {
-        await AuthService.revokeSessions(cookie);
+        await AuthService.revokeSessions(cookie, req.ip);
       }
       clearRefreshCookie(req, res);
       res.status(200).json({ status: 'success', data: null });

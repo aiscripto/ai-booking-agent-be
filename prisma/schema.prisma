@@ -66,6 +66,7 @@ model Tenant {
   users             User[]
   grades            Grade[]
   serviceCategories ServiceCategory[]
+  auditLogs         AuditLog[]
   employeeTimeOff   EmployeeTimeOff[]
   employees         Employee[]
   roles             Role[]
@@ -449,4 +450,26 @@ model EmployeeTimeOff {
 
   @@index([tenantId, employeeId])
   @@map("employee_time_off")
+}
+
+/// Who did what and when. Rows are only ever added: no screen or API changes or deletes them.
+/// `userId` is empty for the voice agent and other system actions; `actorName` is a copy of the user name at the time.
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId     String?  @map("user_id") @db.Uuid
+  actorName  String   @map("actor_name")
+  actorRole  String?  @map("actor_role")
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  summary    String
+  details    Json?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([tenantId, userId])
+  @@map("audit_logs")
 }

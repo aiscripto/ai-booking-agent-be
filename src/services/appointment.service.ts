@@ -449,13 +449,16 @@ export class AppointmentService {
    */
   public static async cancelAppointment(
     tenantId: string,
-    appointmentId: string
-  ): Promise<void> {
+    appointmentId: string,
+    /** When set, only an appointment of this consultant can be cancelled (a consultant login). */
+    onlyEmployeeId?: string
+  ) {
     // Verify ownership and fetch appointment (Rule of Least Privilege: filter by tenantId)
     const appointment = await prisma.appointment.findFirst({
       where: {
         id: appointmentId,
         tenantId,
+        ...(onlyEmployeeId ? { employeeId: onlyEmployeeId } : {}),
       },
     });
 
@@ -464,7 +467,7 @@ export class AppointmentService {
     }
 
     if (appointment.status === 'CANCELLED') {
-      return;
+      return appointment;
     }
 
     // If synchronized with Google Calendar, cancel there
@@ -489,5 +492,6 @@ export class AppointmentService {
 
     // The freed time can be offered again at once.
     slotCacheService.invalidate(`slots:${tenantId}:`);
+    return appointment;
   }
 }
