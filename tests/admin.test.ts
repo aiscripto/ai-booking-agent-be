@@ -149,6 +149,11 @@ describe('Admin setup panel', () => {
       const roles = await roleList();
       expect(roles.slice(0, 4).map((r) => r.code)).toEqual(['ADMIN', 'FRONT_DESK', 'PROVIDER', 'PATIENT']);
       const adminRole = roles.find((r) => r.code === 'ADMIN')!;
+      // An Admin row made before newer permissions existed is shown, and stored, with every permission
+      await prisma.role.updateMany({ where: { tenantId: tenantA, code: 'ADMIN' }, data: { permissions: ['dashboard.view'] } });
+      const refreshed = ((await get('/roles')).body.data as Array<{ code: string; permissions: string[] }>).find((r) => r.code === 'ADMIN')!;
+      expect(refreshed.permissions).toContain('audit.view');
+      expect(refreshed.permissions).not.toContain('appointments.own_only');
       const shrunk = await put(`/roles/${adminRole.id}`, { code: 'ADMIN', name: 'Admin', permissions: ['dashboard.view'], isActive: true });
       expect(shrunk.body.data.permissions.length).toBe(adminRole.permissions.length);
       expect((await put(`/roles/${adminRole.id}`, { code: 'ADMIN', name: 'Admin', permissions: [], isActive: false })).status).toBe(400);

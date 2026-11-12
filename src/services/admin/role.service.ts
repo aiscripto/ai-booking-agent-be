@@ -42,6 +42,8 @@ export class RoleService {
       ],
       skipDuplicates: true,
     });
+    // The Admin role always has every right. If new permissions were added after its row was made, bring the row up to date.
+    await prisma.role.updateMany({ where: { tenantId, code: 'ADMIN', isSystem: true }, data: { permissions: ADMIN_PERMISSIONS } });
   }
 
   public static async list(tenantId: string) {
